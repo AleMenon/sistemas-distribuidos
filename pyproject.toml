@@ -1,0 +1,22 @@
+[project]
+name = "sistemas-distribuidos"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Alexandre Alberto Menon", email = "alexandrealberto.menon@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "pika>=1.4.4",
+]
+
+[project.scripts]
+sistemas-distribuidos = "sistemas_distribuidos:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = false
