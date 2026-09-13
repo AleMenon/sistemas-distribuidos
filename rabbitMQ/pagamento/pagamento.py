@@ -3,6 +3,7 @@ import random
 import json
 import base64
 
+from pika.exceptions import StreamLostError
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import Basic, BasicProperties
 from Crypto.PublicKey import RSA
@@ -74,7 +75,10 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         print('Encerrando...')
-        if channel.is_open:
-            channel.close()
-        if connection.is_open:
-            connection.close()
+        try:
+            if channel.is_open:
+                channel.close()
+            if connection.is_open:
+                connection.close()
+        except StreamLostError:
+            pass

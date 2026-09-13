@@ -3,6 +3,7 @@ import sys
 import json
 import base64
 
+from pika.exceptions import StreamLostError
 from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
@@ -39,7 +40,10 @@ if __name__ == '__main__':
         main()
     finally:
         print('Encerrando...')
-        if channel.is_open:
-            channel.close()
-        if connection.is_open:
-            connection.close()
+        try:
+            if channel.is_open:
+                channel.close()
+            if connection.is_open:
+                connection.close()
+        except StreamLostError:
+            pass
