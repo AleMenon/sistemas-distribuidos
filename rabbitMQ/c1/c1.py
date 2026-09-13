@@ -1,6 +1,11 @@
 import pika
+import json
+
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import Basic, BasicProperties
+from Crypto.PublicKey import RSA
+from Crypto.Signature import pkcs1_15
+from Crypto.Hash import SHA256
 
 EXCHANGE = 'promocoes'
 QUEUE = 'fila.C1'
@@ -15,8 +20,28 @@ channel.queue_declare(queue=QUEUE, exclusive=True)
 for v in ['A', 'B']:
     channel.queue_bind(exchange=EXCHANGE, queue=QUEUE, routing_key=f'promocao.categoria.{v}')
 
+def validate_signature(body, src):
+    event_str = json.dumps(body['content'], sort_keys=True)
+    event_hash = SHA256.new(event_str.encode('utf-8'))
+
+    try:
+        with open(f'{src}_public.pem', 'r') as f:
+            pub_key = RSA.import_key(f.read())
+        pkcs1_15.new(pub_key).verify(event_hash, body['signature'])
+    except ValueError:
+        print("ASSINATURA INVÁLIDA! Evento adulterado ou de fonte desconhecida. Descartando...")
+        return False
+    return True
+
+
 def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProperties, body: bytes):
-    print(f"Promoção recebida: {bytes.decode(body)}")
+    json_body = json.loads(bytes.decode(body))
+
+    if not validate_signature(json_body, 'promocoes'):
+        ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+        return
+
+    print(f'Promoção recebida: {json_body["content"]}')
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 def main():
