@@ -142,11 +142,11 @@ def delete_orders():
         else:
             print('Pedido inválido')
             continue
-        orders.append(id)
+        orders.append(target)
         choice = int(input('Deseja escolher outros pedidos (1 - sim, 2 - nao)?'))
 
-    for id in orders:
-        channel.basic_publish(exchange=EXCHANGE, routing_key='pedido.excluido', body=json.dumps(id))
+    for order in orders:
+        channel.basic_publish(exchange=EXCHANGE, routing_key='pedido.excluido', body=json.dumps(order))
 
 def main():
     thread_listener = threading.Thread(target=listener, daemon=True)
