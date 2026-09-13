@@ -179,7 +179,7 @@ def delete_orders():
         id = int(input('Pedido: '))
 
         target = next((order for order in ORDERS if order['id'] == id), None)
-        if not target or target['status'] == 'PEDIDO_EXCLUIDO':
+        if not target or target['status'] in ('PEDIDO_EXCLUIDO', 'PEDIDO_ENVIADO'):
             print('Pedido inválido')
             continue
 
