@@ -1,11 +1,11 @@
 {
     "content": {
-        "id": 0,
+        "id": null,
         "status": "",
         "items": [
             {
-                "id": 0,
-                "quantity": 0
+                "id": null,
+                "quantity": null
             }
         ]
     },
