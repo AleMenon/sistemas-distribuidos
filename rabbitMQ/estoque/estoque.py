@@ -61,9 +61,9 @@ def validate_signature(body, src):
     try:
         with open(f'{src}_public.pem', 'r') as f:
             pub_key = RSA.import_key(f.read())
-        pkcs1_15.new(pub_key).verify(event_hash, body['signature'])
+        pkcs1_15.new(pub_key).verify(event_hash, base64.b64decode(body['signature']))
     except ValueError:
-        print("ASSINATURA INVÁLIDA! Evento adulterado ou de fonte desconhecida. Descartando...")
+        print(f"ASSINATURA INVÁLIDA! Evento {src} adulterado ou de fonte desconhecida.")
         return False
     return True
 
