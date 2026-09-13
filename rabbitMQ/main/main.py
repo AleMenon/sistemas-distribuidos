@@ -1,15 +1,18 @@
-from math import e
-
 import pika
 import threading
 import json
 import random
-import re
+import base64
+
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import Basic, BasicProperties
+from Crypto.PublicKey import RSA
+from Crypto.Signature import pkcs1_15
+from Crypto.Hash import SHA256
 
 EXCHANGE = 'ecommerce'
 QUEUE = 'fila.principal'
+KEY_NAME = 'main'
 
 PRODUCTS = [
     {
@@ -33,6 +36,31 @@ channel = connection.channel()
 
 channel.exchange_declare(exchange=EXCHANGE, exchange_type='direct')
 
+def sign_content(body):
+    event_str = json.dumps(body['content'], sort_keys=True)
+    event_hash = SHA256.new(event_str.encode('utf-8'))
+
+    with open(f'{KEY_NAME}_private.pem', 'r') as f:
+        priv_key = RSA.import_key(f.read())
+
+    signature = pkcs1_15.new(priv_key).sign(event_hash)
+    body['signature'] = base64.b64encode(signature).decode('utf-8')
+
+    return json.dumps(body)
+
+def validate_signature(body, src):
+    event_str = json.dumps(body['content'], sort_keys=True)
+    event_hash = SHA256.new(event_str.encode('utf-8'))
+
+    try:
+        with open(f'{src}_public.pem', 'r') as f:
+            pub_key = RSA.import_key(f.read())
+        pkcs1_15.new(pub_key).verify(event_hash, body['signature'])
+    except ValueError:
+        print("ASSINATURA INVÁLIDA! Evento adulterado ou de fonte desconhecida. Descartando...")
+        return False
+    return True
+
 def set_status(order_id, status):
     order_id = int(order_id)
     target = next(
@@ -42,25 +70,40 @@ def set_status(order_id, status):
     target['status'] = status
 
 def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProperties, body: bytes):
+    json_body = json.loads(bytes.decode(body))
     if method.routing_key == 'pedido.estoque_ok':
-        id = bytes.decode(body)
-        set_status(id, 'PEDIDO_NO_CARRINHO')
+        if not validate_signature(json_body, 'estoque'):
+            ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+            return
+        set_status(json_body['content']['id'], 'PEDIDO_NO_CARRINHO')
 
     elif method.routing_key == 'estoque.indisponivel':
-        info = json.loads(bytes.decode(body))
-        set_status(info['order_id'], f'PRODUTO_{info["product_id"]}_INDISPONIVEL')
+        if not validate_signature(json_body, 'estoque'):
+            ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+            return
+        set_status(json_body['content']['id'], 'PEDIDO_EXCLUIDO')
+        str_body = sign_content(json_body)
+        ch.basic_publish(exchange=EXCHANGE, routing_key='pedido.excluido', body=str_body)
 
     elif method.routing_key == 'pagamento.aprovado':
-        id = bytes.decode(body)
-        set_status(id, 'PAGAMENTO_APROVADO')
+        if not validate_signature(json_body, 'pagamento'):
+            ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+            return
+        set_status(json_body['content']['id'], 'PAGAMENTO_APROVADO')
 
     elif method.routing_key == 'pagamento.reprovado':
-        id = bytes.decode(body)
-        set_status(id, 'PAGAMENTO_REPROVADO')
+        if not validate_signature(json_body, 'pagamento'):
+            ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+            return
+        set_status(json_body['content']['id'], 'PEDIDO_EXCLUIDO')
+        str_body = sign_content(json_body)
+        ch.basic_publish(exchange=EXCHANGE, routing_key='pedido.excluido', body=str_body)
 
     elif method.routing_key == 'pedido.enviado':
-        id = bytes.decode(body)
-        set_status(id, 'PEDIDO_ENVIADO')
+        if not validate_signature(json_body, 'entrega'):
+            ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+            return
+        set_status(json_body['content']['id'], 'PEDIDO_ENVIADO')
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -111,13 +154,15 @@ def create_orders():
         choice = int(input('Deseja escolher mais produtos (1 - sim, 2 - nao)?'))
 
     order = {
-        "id": random.randint(1, 1000),
-        "status": "PEDIDO_CRIADO",
-        "items": products
+        'id': random.randint(1, 1000),
+        'status': 'PEDIDO_CRIADO',
+        'items': products
     }
     ORDERS.append(order)
 
-    channel.basic_publish(exchange=EXCHANGE, routing_key='pedido.criado', body=json.dumps(order))
+    str_body = sign_content({'content': order})
+
+    channel.basic_publish(exchange=EXCHANGE, routing_key='pedido.criado', body=str_body)
 
 def orders_status():
     print('===== Pedidos =====')
@@ -134,19 +179,17 @@ def delete_orders():
         id = int(input('Pedido: '))
 
         target = next((order for order in ORDERS if order['id'] == id), None)
-        if target:
-            target['status'] = 'PEDIDO_EXCLUIDO'
-        elif target and re.search(r'PRODUTO_\d+_INDISPONIVEL', target['status']):
-            target['status'] = 'PEDIDO_EXCLUIDO'
-            continue
-        else:
+        if not target or target['status'] == 'PEDIDO_EXCLUIDO':
             print('Pedido inválido')
             continue
+
+        target['status'] = 'PEDIDO_EXCLUIDO'
         orders.append(target)
         choice = int(input('Deseja escolher outros pedidos (1 - sim, 2 - nao)?'))
 
     for order in orders:
-        channel.basic_publish(exchange=EXCHANGE, routing_key='pedido.excluido', body=json.dumps(order))
+        str_body = sign_content({'content': order})
+        channel.basic_publish(exchange=EXCHANGE, routing_key='pedido.excluido', body=str_body)
 
 def main():
     thread_listener = threading.Thread(target=listener, daemon=True)
