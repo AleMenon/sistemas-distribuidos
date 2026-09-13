@@ -68,4 +68,7 @@ if __name__ == '__main__':
         main()
     except KeyboardInterrupt:
         print('Encerrando...')
-        channel.close()
+        if channel.is_open:
+            channel.close()
+        if connection.is_open:
+            connection.close()

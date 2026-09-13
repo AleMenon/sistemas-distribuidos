@@ -31,6 +31,8 @@ PRODUCTS = [
 
 ORDERS = []
 
+STOP_THREAD = threading.Event()
+
 connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
 channel = connection.channel()
 
@@ -127,12 +129,12 @@ def listener():
 
     channel.basic_consume(queue=QUEUE, on_message_callback=callback)
     try:
-        channel.start_consuming()
+        while not STOP_THREAD.is_set():
+            connection.process_data_events(time_limit=1)
     finally:
-        if not channel.is_closed:
+        if channel.is_open:
             channel.close()
-
-        if not connection.is_closed:
+        if connection.is_open:
             connection.close()
 
 def list_products():
@@ -192,9 +194,6 @@ def delete_orders():
         channel.basic_publish(exchange=EXCHANGE, routing_key='pedido.excluido', body=str_body)
 
 def main():
-    thread_listener = threading.Thread(target=listener, daemon=True)
-    thread_listener.start()
-
     while True:
         print('===== MENU ECOMMERCE =====')
         print('1. Listar produtos')
@@ -221,10 +220,17 @@ def main():
 
 if __name__ == '__main__':
     print('Iniciando...')
+    thread_listener = threading.Thread(target=listener, daemon=True)
+    thread_listener.start()
     try:
         main()
     except KeyboardInterrupt:
         ...
     finally:
         print('Encerrando...')
-        channel.close()
+        STOP_THREAD.set()
+        thread_listener.join()
+        if channel.is_open:
+            channel.close()
+        if connection.is_open:
+            connection.close()

@@ -39,4 +39,7 @@ if __name__ == '__main__':
         main()
     finally:
         print('Encerrando...')
-        channel.close()
+        if channel.is_open:
+            channel.close()
+        if connection.is_open:
+            connection.close()
