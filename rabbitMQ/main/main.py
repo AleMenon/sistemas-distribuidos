@@ -139,9 +139,10 @@ def listener():
             connection.close()
 
 def list_products():
-    print('===== Produtos =====')
+    print('\n===== Produtos =====')
     for v in PRODUCTS:
         print(f'{v["id"]} - {v["name"]}')
+    print('\n')
 
 def create_orders():
     list_products()
@@ -155,6 +156,7 @@ def create_orders():
         quantity = int(input('Quantidade: '))
         products.append({'id': id, 'quantity': quantity})
         choice = int(input('Deseja escolher mais produtos (1 - sim, 2 - nao)?'))
+    print('\n')
 
     order = {
         'id': random.randint(1, 1000),
@@ -168,11 +170,12 @@ def create_orders():
     channel.basic_publish(exchange=EXCHANGE, routing_key='pedido.criado', body=str_body)
 
 def orders_status():
-    print('===== Pedidos =====')
+    print('\n===== Pedidos =====')
     for order in ORDERS:
         print(f'{order["id"]}: {order["status"]}')
         for item in order["items"]:
             print(f'Produto {item["id"]} - {item["quantity"]} unidades')
+    print('\n')
 
 def delete_orders():
     orders_status()
@@ -182,13 +185,14 @@ def delete_orders():
         id = int(input('Pedido: '))
 
         target = next((order for order in ORDERS if order['id'] == id), None)
-        if not target or target['status'] in ('PEDIDO_EXCLUIDO', 'PEDIDO_ENVIADO'):
+        if not target or target['status'] in {'PEDIDO_EXCLUIDO'}:
             print('Pedido inválido')
             continue
 
         target['status'] = 'PEDIDO_EXCLUIDO'
         orders.append(target)
         choice = int(input('Deseja escolher outros pedidos (1 - sim, 2 - nao)?'))
+    print('\n')
 
     for order in orders:
         str_body = sign_content({'content': order})
