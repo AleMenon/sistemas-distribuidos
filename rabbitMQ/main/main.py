@@ -108,6 +108,8 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
             return
         set_status(json_body['content']['id'], 'PEDIDO_ENVIADO')
 
+    print(f'Recebido - {method.routing_key}')
+
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 def listener():
@@ -142,7 +144,6 @@ def list_products():
     print('\n===== Produtos =====')
     for v in PRODUCTS:
         print(f'{v["id"]} - {v["name"]}')
-    print('\n')
 
 def create_orders():
     list_products()
@@ -155,7 +156,7 @@ def create_orders():
             continue
         quantity = int(input('Quantidade: '))
         products.append({'id': id, 'quantity': quantity})
-        choice = int(input('Deseja escolher mais produtos (1 - sim, 2 - nao)?'))
+        choice = int(input('Deseja escolher mais produtos (1 - sim, 2 - nao)? '))
     print('\n')
 
     order = {
@@ -175,7 +176,6 @@ def orders_status():
         print(f'{order["id"]}: {order["status"]}')
         for item in order["items"]:
             print(f'Produto {item["id"]} - {item["quantity"]} unidades')
-    print('\n')
 
 def delete_orders():
     orders_status()
@@ -191,7 +191,7 @@ def delete_orders():
 
         target['status'] = 'PEDIDO_EXCLUIDO'
         orders.append(target)
-        choice = int(input('Deseja escolher outros pedidos (1 - sim, 2 - nao)?'))
+        choice = int(input('Deseja escolher outros pedidos (1 - sim, 2 - nao)? '))
     print('\n')
 
     for order in orders:

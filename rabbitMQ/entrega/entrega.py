@@ -59,6 +59,9 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
         ch.basic_publish(exchange=EXCHANGE, routing_key='pedido.enviado', body=str_body)
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
+    print(f'Recebido - {method.routing_key}:')
+    print(json_body)
+
 def main():
     channel.basic_consume(queue=QUEUE, on_message_callback=callback)
     channel.start_consuming()

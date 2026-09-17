@@ -51,6 +51,7 @@ def main():
 
 if __name__ == '__main__':
     try:
+        print('Iniciando...')
         main()
     except KeyboardInterrupt:
         print('Encerrando...')

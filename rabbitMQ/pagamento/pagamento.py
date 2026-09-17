@@ -63,6 +63,10 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
         ch.basic_publish(exchange=EXCHANGE, routing_key='pagamento.aprovado', body=str_body)
     else:
         ch.basic_publish(exchange=EXCHANGE, routing_key='pagamento.reprovado', body=str_body)
+
+    print(f'Recebido - {method.routing_key}:')
+    print(json_body)
+
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 def main():

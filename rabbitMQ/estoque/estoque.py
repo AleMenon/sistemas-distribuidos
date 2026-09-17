@@ -100,6 +100,9 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
             )
             target['stock'] += item['quantity']
 
+    print(f'Recebido - {method.routing_key}:')
+    print(json_body)
+
     ch.basic_ack(method.delivery_tag)
 
 def main():
