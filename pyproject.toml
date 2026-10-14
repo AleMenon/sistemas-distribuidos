@@ -8,8 +8,11 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.143.1",
+    "httpx>=0.28.1",
     "pika>=1.4.4",
     "pycryptodome>=3.23.0",
+    "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
