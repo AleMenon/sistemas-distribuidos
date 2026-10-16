@@ -23,5 +23,3 @@ def config_database():
         cursor.executemany('INSERT INTO products (id, name, quantity) VALUES (?, ?, ?)', init_products)
         conn.commit()
     conn.close()
-
-config_database()

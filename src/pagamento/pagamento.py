@@ -2,27 +2,81 @@ import pika
 import random
 import json
 import base64
+import httpx
 
 from pika.exceptions import StreamLostError
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import Basic, BasicProperties
+
 from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
+
+from fastapi import FastAPI, Request
 
 EXCHANGE = 'ecommerce'
 QUEUE = 'fila.pagamento'
 KEY_NAME = 'pagamento'
 
-connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-channel = connection.channel()
+WEBHOOK_URL = "http://localhost:8002/v1/webhook"
+MOCK_URL = "http://localhost:8004/v1/cobranca"
 
-channel.exchange_declare(exchange=EXCHANGE, exchange_type='direct')
+app = FastAPI()
 
-channel.queue_declare(queue=QUEUE, exclusive=True)
+#NOTE: RestAPI
+@app.post("/v1/webhook")
+async def webhook(request: Request):
+    body = await request.json()
+    order_id = body.get("order_id")
+    status = body.get("status")
 
-channel.queue_bind(exchange=EXCHANGE, queue=QUEUE, routing_key='pedido.estoque_ok')
+    event_body = {"id": order_id}
 
+    publish(f"pagamento.{status.lower()}", event_body)
+    print(f"Pagamento {status.lower()} para o pedido {order_id}")
+
+#NOTE: RabbitMQ
+def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProperties, body: bytes):
+    json_body = json.loads(bytes.decode(body))
+
+    if method.routing_key == 'pedido.estoque_ok':
+        if not validate_signature(json_body, 'estoque'):
+            ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        order = json_body['content']
+
+        try:
+            with httpx.Client() as client:
+                payload = {
+                    "order_id": order['id'],
+                    "webhook_url": WEBHOOK_URL
+                }
+                response = client.post(MOCK_URL, json=payload)
+                mock_data = response.json()
+
+                order['checkout_url'] = mock_data.get('checkout_url')
+
+                print(f"Cobrança criada. Aguardando pagamento do pedido {order['id']}")
+        except Exception as e:
+            print(f"Erro ao contatar o Mock: {e}")
+
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+
+def listener():
+    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+    channel = connection.channel()
+
+    channel.exchange_declare(exchange=EXCHANGE, exchange_type='direct')
+
+    channel.queue_declare(queue=QUEUE, exclusive=True)
+
+    channel.queue_bind(exchange=EXCHANGE, queue=QUEUE, routing_key='pedido.estoque_ok')
+
+    channel.basic_consume(queue=QUEUE, on_message_callback=callback)
+    channel.start_consuming()
+
+#NOTE: Utils
 def sign_content(body):
     event_str = json.dumps(body['content'], sort_keys=True)
     event_hash = SHA256.new(event_str.encode('utf-8'))
@@ -48,41 +102,9 @@ def validate_signature(body, src):
         return False
     return True
 
-def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProperties, body: bytes):
-    json_body = json.loads(bytes.decode(body))
-
-    if not validate_signature(json_body, 'estoque'):
-        ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
-        return
-
-    if not (method.routing_key == 'pedido.estoque_ok'):
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-        return
-    str_body = sign_content(json_body)
-    if random.choice([True, False]):
-        ch.basic_publish(exchange=EXCHANGE, routing_key='pagamento.aprovado', body=str_body)
-    else:
-        ch.basic_publish(exchange=EXCHANGE, routing_key='pagamento.reprovado', body=str_body)
-
-    print(f'Recebido - {method.routing_key}:')
-    print(json_body)
-
-    ch.basic_ack(delivery_tag=method.delivery_tag)
-
-def main():
-    channel.basic_consume(queue=QUEUE, on_message_callback=callback)
-    channel.start_consuming()
-
-if __name__ == '__main__':
-    try:
-        print('Iniciando...')
-        main()
-    except KeyboardInterrupt:
-        print('Encerrando...')
-        try:
-            if channel.is_open:
-                channel.close()
-            if connection.is_open:
-                connection.close()
-        except StreamLostError:
-            pass
+def publish(routing_key, body):
+    connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+    channel = connection.channel()
+    str_body = sign_content({'content': body})
+    channel.basic_publish(exchange=EXCHANGE, routing_key=routing_key, body=str_body)
+    connection.close()

@@ -4,6 +4,9 @@ import threading
 import json
 import base64
 import httpx
+import sqlite3
+
+import database
 
 from pika.exceptions import StreamLostError
 from pika.adapters.blocking_connection import BlockingChannel
@@ -14,16 +17,20 @@ from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
 
 from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+
+DB_NAME = "main"
 
 EXCHANGE = 'ecommerce'
 QUEUE = 'fila.principal'
 KEY_NAME = 'main'
 
-ORDERS = []
-
 MAIN_LOOP = None
 
 app = FastAPI()
+database.config_database()
+
+sse_clients = []
 
 #NOTE: RestAPI
 @app.get("/v1/products")
@@ -35,6 +42,20 @@ async def get_products(request: Request):
 @app.post("/v1/orders")
 async def post_orders(request: Request):
     body = await request.json()
+
+    conn = sqlite3.connect(f"{DB_NAME}.db")
+    cursor = conn.cursor()
+
+    cursor.execute("INSERT INTO orders (id, status) VALUES (?, ?)", (body['id'], 'PEDIDO_CRIADO'))
+
+    for item in body['items']:
+        cursor.execute(
+            "INSERT INTO items (order_id, product_id, quantity) VALUES (?, ?, ?)",
+            (body['id'], item['id'], item['quantity'])
+        )
+
+    conn.commit()
+    conn.close()
     publish("pedido.criado", body)
     return {"status": "PROCESSANDO"}
 
@@ -46,11 +67,30 @@ async def post_promotion_sign(request: Request):
 
 @app.on_event("startup")
 def event_startup():
+    global MAIN_LOOP
     MAIN_LOOP = asyncio.get_running_loop()
     threading.Thread(target=listener, daemon=True).start()
 
+@app.get("/v1/sse/{client_id}")
+async def sse_endpoint(request: Request, client_id):
+    async def event_generator(queue, client_id):
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                msg = await queue.get()
+                yield msg
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if client_id in sse_clients:
+                del sse_clients[client_id]
+
+    queue = asyncio.Queue()
+    sse_clients[client_id] = queue
+    return StreamingResponse(event_generator(queue, client_id), media_type="text/event-stream")
+
 #NOTE: RabbitMQ
-#TODO: Entender sse e fazer alterações aqui
 def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProperties, body: bytes):
     json_body = json.loads(bytes.decode(body))
     if method.routing_key == 'pedido.estoque_ok':
@@ -88,6 +128,8 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
         set_status(json_body['content']['id'], 'PEDIDO_ENVIADO')
 
     print(f'Recebido - {method.routing_key}')
+
+    sse_notify(method.routing_key, json_body['content'])
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -146,9 +188,13 @@ def validate_signature(body, src):
     return True
 
 def set_status(order_id, status):
-    order_id = int(order_id)
-    target = next(
-        order for order in ORDERS
-        if order['id'] == order_id
-    )
-    target['status'] = status
+    conn = sqlite3.connect(f"{DB_NAME}.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE orders SET status = ? WHERE id = ?", (status, int(order_id)))
+    conn.commit()
+    conn.close()
+
+def sse_notify(routing_key, content):
+    if MAIN_LOOP:
+        sse_msg = f"data: {json.dumps({'event': routing_key, 'content': content})}\n\n"
+        asyncio.run_coroutine_threadsafe(sse_clients[content["id"]].put(sse_msg), MAIN_LOOP)

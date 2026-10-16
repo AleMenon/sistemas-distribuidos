@@ -8,10 +8,12 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "dotenv>=0.9.9",
     "fastapi>=0.143.1",
     "httpx>=0.28.1",
     "pika>=1.4.4",
     "pycryptodome>=3.23.0",
+    "resend>=2.50.0",
     "uvicorn>=0.54.0",
 ]
 

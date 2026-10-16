@@ -5,6 +5,8 @@ import base64
 import sqlite3
 import threading
 
+import database
+
 from pika.exceptions import StreamLostError
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import Basic, BasicProperties
@@ -20,6 +22,7 @@ QUEUE = 'fila.estoque'
 KEY_NAME = 'estoque'
 
 app = FastAPI()
+database.config_database()
 
 #NOTE: FastAPI
 @app.get("/v1/products")
