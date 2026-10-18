@@ -49,50 +49,170 @@ def listener():
     channel.basic_consume(queue=QUEUE, on_message_callback=callback)
     channel.start_consuming()
 
-def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProperties, body: bytes):
-    json_body = json.loads(bytes.decode(body))
+def callback(ch: BlockingChannel, method: Basic.Deliver,
+             properties: BasicProperties, body: bytes):
 
-    if not validate_signature(json_body, 'main'):
-        ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
-        return
+    try:
+        json_body = json.loads(body.decode("utf-8"))
 
-    connection = sqlite3.connect("estoque.db")
-    cursor = connection.cursor()
+        if not validate_signature(json_body, "main"):
+            ch.basic_reject(method.delivery_tag, requeue=False)
+            return
 
-    if method.routing_key == 'pedido.criado':
-        valid_stock = True
-        for item in json_body['content']['items']:
-            cursor.execute('SELECT quantity FROM products WHERE id = ?', (item['id'],))
-            result = cursor.fetchone()
+        content = json_body["content"]
+        order_id = content["id"]
 
+        if type(order_id) is not int or order_id <= 0:
+            raise ValueError("ID do pedido inválido")
 
-            if not result or item['quantity'] > result[0]:
-                valid_stock = False
-                break
+        connection = sqlite3.connect("estoque.db")
 
-        if not valid_stock:
-            str_body = sign_content(json_body)
-            ch.basic_publish(exchange=EXCHANGE, routing_key='estoque.indisponivel', body=str_body)
-        else:
-            for item in json_body['content']['items']:
+        try:
+            cursor = connection.cursor()
+
+            # Bloqueia concorrência entre leitura e atualização do estoque
+            cursor.execute("BEGIN IMMEDIATE")
+
+            if method.routing_key == "pedido.criado":
+
+                # 1. Validar e agrupar quantidades
+                quantities = {}
+
+                items = content["items"]
+
+                if not isinstance(items, list) or not items:
+                    raise ValueError("Pedido sem itens válidos")
+
+                for item in items:
+                    product_id = item["id"]
+                    quantity = item["quantity"]
+
+                    if (type(product_id) is not int or product_id <= 0
+                            or type(quantity) is not int or quantity <= 0):
+                        raise ValueError("Produto ou quantidade inválida")
+
+                    quantities[product_id] = (
+                        quantities.get(product_id, 0) + quantity
+                    )
+
+                # 2. Verificar se o pedido já foi reservado
                 cursor.execute(
-                    'UPDATE products SET quantity = quantity - ? WHERE id = ?',
-                    (item['quantity'], item['id'])
+                    "SELECT product_id, quantity FROM reservations WHERE order_id = ?",
+                    (order_id,)
                 )
-            connection.commit()
-            str_body = sign_content(json_body)
-            ch.basic_publish(exchange=EXCHANGE, routing_key='pedido.estoque_ok', body=str_body)
+                existing = dict(cursor.fetchall())
 
-    elif method.routing_key == 'pedido.excluido':
-        for item in json_body['content']['items']:
-            cursor.execute(
-                'UPDATE products SET quantity = quantity + ? WHERE id = ?',
-               (item['quantity'], item['id'])
-            )
-        connection.commit()
+                if existing:
+                    if existing != quantities:
+                        raise ValueError("Pedido já reservado com itens diferentes")
 
-    connection.close()
-    ch.basic_ack(method.delivery_tag)
+                    routing_key = "pedido.estoque_ok"
+
+                else:
+                    # 3. Verificar disponibilidade total
+                    valid_stock = True
+
+                    for product_id, quantity in quantities.items():
+                        cursor.execute(
+                            "SELECT quantity FROM products WHERE id = ?",
+                            (product_id,)
+                        )
+
+                        result = cursor.fetchone()
+
+                        if result is None or quantity > result[0]:
+                            valid_stock = False
+                            break
+
+                    if not valid_stock:
+                        routing_key = "estoque.indisponivel"
+
+                    else:
+                        # 4. Baixar estoque e registrar reservas
+                        for product_id, quantity in quantities.items():
+                            cursor.execute(
+                                """
+                                UPDATE products
+                                SET quantity = quantity - ?
+                                WHERE id = ?
+                                """,
+                                (quantity, product_id)
+                            )
+
+                            cursor.execute(
+                                """
+                                INSERT INTO reservations
+                                (order_id, product_id, quantity)
+                                VALUES (?, ?, ?)
+                                """,
+                                (order_id, product_id, quantity)
+                            )
+
+                        routing_key = "pedido.estoque_ok"
+
+                connection.commit()
+
+                # 5. Publicar resultado no RabbitMQ
+                str_body = sign_content(json_body)
+
+                ch.basic_publish(
+                    exchange=EXCHANGE,
+                    routing_key=routing_key,
+                    body=str_body
+                )
+
+            elif method.routing_key == "pedido.excluido":
+
+                # 1. Buscar somente produtos realmente reservados
+                cursor.execute(
+                    """
+                    SELECT product_id, quantity
+                    FROM reservations
+                    WHERE order_id = ?
+                    """,
+                    (order_id,)
+                )
+
+                reserved_items = cursor.fetchall()
+
+                # 2. Devolver os produtos reservados
+                for product_id, quantity in reserved_items:
+                    cursor.execute(
+                        """
+                        UPDATE products
+                        SET quantity = quantity + ?
+                        WHERE id = ?
+                        """,
+                        (quantity, product_id)
+                    )
+
+                # 3. Remover as reservas devolvidas
+                cursor.execute(
+                    "DELETE FROM reservations WHERE order_id = ?",
+                    (order_id,)
+                )
+
+                connection.commit()
+
+            else:
+                raise ValueError("Evento desconhecido")
+
+        except Exception:
+            connection.rollback()
+            raise
+
+        finally:
+            connection.close()
+
+        ch.basic_ack(method.delivery_tag)
+
+    except (ValueError, KeyError, TypeError) as error:
+        print(f"Mensagem inválida: {error}")
+        ch.basic_reject(method.delivery_tag, requeue=False)
+
+    except Exception as error:
+        print(f"Erro ao processar mensagem: {error}")
+        ch.basic_nack(method.delivery_tag, requeue=True)
 
 @app.on_event("startup")
 def startup_event():

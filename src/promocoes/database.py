@@ -8,6 +8,7 @@ def config_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
             category TEXT NOT NULL
+            UNIQUE(email,categoria)
         )
     ''')
     conn.commit()

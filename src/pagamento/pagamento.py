@@ -1,8 +1,8 @@
 import pika
-import random
 import json
 import base64
 import httpx
+import threading
 
 from pika.exceptions import StreamLostError
 from pika.adapters.blocking_connection import BlockingChannel
@@ -55,7 +55,15 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
                 response = client.post(MOCK_URL, json=payload)
                 mock_data = response.json()
 
-                order['checkout_url'] = mock_data.get('checkout_url')
+                checkout_url = mock_data.get('checkout_url')
+
+                if not checkout_url:
+                    raise ValueError("Mock não retornou a URL do checkout")
+                
+                publish("pagamento.checkout_criado", {
+                    "id": order["id"],
+                    "payment_url": checkout_url
+                })
 
                 print(f"Cobrança criada. Aguardando pagamento do pedido {order['id']}")
         except Exception as e:
@@ -75,6 +83,10 @@ def listener():
 
     channel.basic_consume(queue=QUEUE, on_message_callback=callback)
     channel.start_consuming()
+
+@app.on_event("startup")
+def startup_event():
+    threading.Thread(target=listener, daemon=True).start()
 
 #NOTE: Utils
 def sign_content(body):

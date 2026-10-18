@@ -22,4 +22,5 @@ def config_database():
         );
         """
     )
+    conn.commit()
     conn.close()

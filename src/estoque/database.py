@@ -13,6 +13,17 @@ def config_database():
         """
     )
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reservations (
+            order_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL CHECK (quantity > 0),
+            PRIMARY KEY (order_id, product_id)
+        )
+        """
+    )
+
     cursor.execute('SELECT COUNT(*) FROM products')
     if cursor.fetchone()[0] == 0:
         init_products = [
@@ -21,5 +32,6 @@ def config_database():
             (3, 'produto_c', 5)
         ]
         cursor.executemany('INSERT INTO products (id, name, quantity) VALUES (?, ?, ?)', init_products)
-        conn.commit()
+    
+    conn.commit()
     conn.close()

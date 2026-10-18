@@ -30,7 +30,7 @@ MAIN_LOOP = None
 app = FastAPI()
 database.config_database()
 
-sse_clients = []
+sse_clients = {}
 
 #NOTE: RestAPI
 @app.get("/v1/products")
@@ -65,6 +65,17 @@ async def post_promotion_sign(request: Request):
     publish("interesse.promocao", body)
     return {"status": "APROVADO"}
 
+@app.delete("/v1/promotion/sign")
+async def delete_promotion_sign(request: Request):
+    body = await request.json()
+
+    if not body.get("email") or not body.get("category"):
+        return {"status": "DADOS_INVALIDOS"}
+
+    publish("interesse.cancelado", body)
+
+    return {"status": "PROCESSANDO"}
+
 @app.on_event("startup")
 def event_startup():
     global MAIN_LOOP
@@ -72,23 +83,34 @@ def event_startup():
     threading.Thread(target=listener, daemon=True).start()
 
 @app.get("/v1/sse/{client_id}")
-async def sse_endpoint(request: Request, client_id):
-    async def event_generator(queue, client_id):
+async def sse_endpoint(request: Request, client_id: str):
+    queue = asyncio.Queue()
+    sse_clients[client_id] = queue
+    
+    async def event_generator():
         try:
             while True:
                 if await request.is_disconnected():
                     break
-                msg = await queue.get()
-                yield msg
+
+                try:
+                    message = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=15
+                    )
+                    yield message
+
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+
         except asyncio.CancelledError:
             pass
+
         finally:
-            if client_id in sse_clients:
+            if sse_clients.get(client_id) is queue:
                 del sse_clients[client_id]
 
-    queue = asyncio.Queue()
-    sse_clients[client_id] = queue
-    return StreamingResponse(event_generator(queue, client_id), media_type="text/event-stream")
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 #NOTE: RabbitMQ
 def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProperties, body: bytes):
@@ -107,13 +129,20 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
         str_body = sign_content(json_body)
         ch.basic_publish(exchange=EXCHANGE, routing_key='pedido.excluido', body=str_body)
 
+    elif method.routing_key == 'pagamento.checkout_criado':
+        if not validate_signature(json_body, 'pagamento'):
+            ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        set_status(json_body['content']['id'], 'AGUARDANDO_PAGAMENTO')
+
     elif method.routing_key == 'pagamento.aprovado':
         if not validate_signature(json_body, 'pagamento'):
             ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
             return
         set_status(json_body['content']['id'], 'PAGAMENTO_APROVADO')
 
-    elif method.routing_key == 'pagamento.reprovado':
+    elif method.routing_key == 'pagamento.recusado':
         if not validate_signature(json_body, 'pagamento'):
             ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
             return
@@ -144,8 +173,9 @@ def listener():
     routing_keys = [
         'pedido.estoque_ok',
         'estoque.indisponivel',
+        'pagamento.checkout_criado',
         'pagamento.aprovado',
-        'pagamento.reprovado',
+        'pagamento.recusado',
         'pedido.enviado'
     ]
     for v in routing_keys:
@@ -195,6 +225,17 @@ def set_status(order_id, status):
     conn.close()
 
 def sse_notify(routing_key, content):
-    if MAIN_LOOP:
-        sse_msg = f"data: {json.dumps({'event': routing_key, 'content': content})}\n\n"
-        asyncio.run_coroutine_threadsafe(sse_clients[content["id"]].put(sse_msg), MAIN_LOOP)
+    if MAIN_LOOP is None:
+        return
+
+    client_id = str(content["id"])
+
+    message = f"data: {json.dumps({'event': routing_key, 'content': content})}\n\n"
+
+    def notify():
+        queue = sse_clients.get(client_id)
+
+        if queue is not None:
+            queue.put_nowait(message)
+
+    MAIN_LOOP.call_soon_threadsafe(notify)

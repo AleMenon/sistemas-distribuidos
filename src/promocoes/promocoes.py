@@ -1,11 +1,9 @@
 import pika
-import sys
 import json
 import base64
 import os
 import sqlite3
 import threading
-import httpx
 import resend
 
 import database
@@ -25,7 +23,7 @@ from fastapi import FastAPI
 load_dotenv()
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
 
-EXCHANGE = 'promocoes'
+EXCHANGE = 'ecommerce'
 KEY_NAME = 'promocoes'
 QUEUE = 'fila.promocoes'
 
@@ -55,6 +53,7 @@ async def promotion(data: dict):
                 "html": f"<strong>Aproveite!</strong> discontos de até {discount} na categoria {category}."
             }
         )
+        emails.append(email)
 
     return {
         "status": "Promoções disparadas",
@@ -81,7 +80,10 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
     if email and category:
         conn = sqlite3.connect('promocoes.db')
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO interesses (email, category) VALUES (?, ?)", (email, category))
+        if method.routing_key == "interesse.promocao":
+            cursor.execute("INSERT OR IGNORE INTO promotions (email, category) VALUES (?, ?)", (email, category))
+        if method.routing_key == "interesse.cancelado":
+            cursor.execute("DELETE FROM promotions WHERE email = ? AND category = ?", (email, category))
         conn.commit()
         conn.close()
         print(f"Interesse registrado: {email} deseja promoções de {category}")
@@ -97,6 +99,7 @@ def listener():
     channel.queue_declare(queue=QUEUE, exclusive=True)
 
     channel.queue_bind(exchange=EXCHANGE, queue=QUEUE, routing_key='interesse.promocao')
+    channel.queue_bind(exchange=EXCHANGE, queue=QUEUE, routing_key='interesse.cancelado')
 
     channel.basic_consume(queue=QUEUE, on_message_callback=callback)
     channel.start_consuming()

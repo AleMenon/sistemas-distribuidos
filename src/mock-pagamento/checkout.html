@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pagamento Simulado</title>
+  </head>
+  <body>
+    <h1>Pagamento Simulado</h1>
+
+    <p id="pedido"></p>
+
+    <button onclick="enviar('APROVADO')">Pagamento Aprovado</button>
+
+    <button onclick="enviar('RECUSADO')">Pagamento Recusado</button>
+
+    <p id="resultado"></p>
+
+    <script>
+      const orderId = window.location.pathname.split("/").pop();
+
+      document.getElementById("pedido").textContent = `Pedido #${orderId}`;
+
+      async function enviar(status) {
+        const buttons = document.querySelectorAll("button");
+
+        buttons.forEach((button) => (button.disabled = true));
+
+        try {
+          const response = await fetch(`/checkout/${orderId}/resultado`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ status }),
+          });
+
+          if (!response.ok) {
+            throw new Error("Erro ao processar pagamento");
+          }
+
+          document.getElementById("resultado").textContent =
+            `Pagamento ${status.toLowerCase()}!`;
+        } catch (error) {
+          buttons.forEach((button) => (button.disabled = false));
+
+          document.getElementById("resultado").textContent = error.message;
+        }
+      }
+    </script>
+  </body>
+</html>
