@@ -20,7 +20,7 @@ export async function signPromotion(promotion: Promotion) {
 }
 
 export async function cancelAllPromotions(email: string) {
-  const response = await fetch("/v1/promotion/sign", {
+  const response = await fetch("/v1/promotion/unsign", {
     method: "DELETE",
     headers: {
       "Content-Type": "application/json",

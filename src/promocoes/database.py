@@ -7,8 +7,8 @@ def config_database():
         CREATE TABLE IF NOT EXISTS promotions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
-            category TEXT NOT NULL
-            UNIQUE(email,categoria)
+            category TEXT NOT NULL,
+            UNIQUE(email, category)
         )
     ''')
     conn.commit()

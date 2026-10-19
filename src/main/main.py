@@ -65,7 +65,7 @@ async def post_promotion_sign(request: Request):
     publish("interesse.promocao", body)
     return {"status": "APROVADO"}
 
-@app.delete("/v1/promotion/sign")
+@app.delete("/v1/promotion/unsign")
 async def delete_promotion_sign(request: Request):
     body = await request.json()
     email = body.get("email")
@@ -88,7 +88,7 @@ def event_startup():
 async def sse_endpoint(request: Request, client_id: str):
     queue = asyncio.Queue()
     sse_clients[client_id] = queue
-    
+
     async def event_generator():
         try:
             while True:
@@ -98,7 +98,7 @@ async def sse_endpoint(request: Request, client_id: str):
                 try:
                     message = await asyncio.wait_for(
                         queue.get(),
-                        timeout=15
+                        timeout=1
                     )
                     yield message
 

@@ -18,7 +18,7 @@ from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 load_dotenv()
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
@@ -33,9 +33,10 @@ resend.api_key = RESEND_API_KEY
 
 #NOTE: FastAPI
 @app.post("/v1/promotion")
-async def promotion(data: dict):
-    category = data.get('category')
-    discount = data.get('discount')
+async def promotion(request: Request):
+    body = await request.json()
+    category = body.get("category")
+    discount = body.get("discount")
 
     conn = sqlite3.connect('promocoes.db')
     cursor = conn.cursor()
@@ -48,9 +49,10 @@ async def promotion(data: dict):
     for (email,) in targets:
         resend.Emails.send(
             {
+                "from": "onboarding@resend.dev",
                 "to": email,
                 "subject": f"Promoção de {category}!",
-                "html": f"<strong>Aproveite!</strong> discontos de até {discount} na categoria {category}."
+                "html": f"<strong>Aproveite!</strong> discontos de até {discount}% na categoria {category}."
             }
         )
         emails.append(email)
@@ -77,16 +79,17 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
     email = content.get('email')
     category = content.get('category')
 
-    if email and category:
+    if email:
         conn = sqlite3.connect('promocoes.db')
         cursor = conn.cursor()
         if method.routing_key == "interesse.promocao":
             cursor.execute("INSERT OR IGNORE INTO promotions (email, category) VALUES (?, ?)", (email, category))
+            print(f"Interesse registrado: {email} deseja promoções de {category}")
         if method.routing_key == "interesse.cancelado":
+            print(f"Interesse registrado: {email} não deseja mais receber promoções")
             cursor.execute("DELETE FROM promotions WHERE email = ?", (email,))
         conn.commit()
         conn.close()
-        print(f"Interesse registrado: {email} deseja promoções de {category}")
 
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
