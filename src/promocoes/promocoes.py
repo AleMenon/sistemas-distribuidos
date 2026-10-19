@@ -83,7 +83,7 @@ def callback(ch: BlockingChannel, method: Basic.Deliver, properties: BasicProper
         if method.routing_key == "interesse.promocao":
             cursor.execute("INSERT OR IGNORE INTO promotions (email, category) VALUES (?, ?)", (email, category))
         if method.routing_key == "interesse.cancelado":
-            cursor.execute("DELETE FROM promotions WHERE email = ? AND category = ?", (email, category))
+            cursor.execute("DELETE FROM promotions WHERE email = ?", (email,))
         conn.commit()
         conn.close()
         print(f"Interesse registrado: {email} deseja promoções de {category}")

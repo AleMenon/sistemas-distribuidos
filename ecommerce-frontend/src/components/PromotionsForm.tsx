@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { signPromotion } from "../services/promotions";
+import { signPromotion, cancelAllPromotions } from "../services/promotions";
 
 const categories = ["Informática", "Periféricos", "Acessórios"];
 
@@ -53,6 +53,28 @@ function PromotionsForm() {
     }
   }
 
+  async function handleCancel() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setMessage("Informe um e-mail válido.");
+      return;
+    }
+
+    setLoading(true);
+    setMessage("");
+
+    try {
+      await cancelAllPromotions(email.trim());
+
+      setMessage("Solicitação de cancelamento enviada!");
+      setSelectedCategories([]);
+    } catch (error) {
+      console.error(error);
+      setMessage("Erro ao cancelar inscrições.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <section>
       <h2>Receba nossas promoções</h2>
@@ -88,6 +110,10 @@ function PromotionsForm() {
 
         <button type="submit" disabled={loading}>
           {loading ? "Enviando..." : "Cadastrar"}
+        </button>
+
+        <button type="button" onClick={handleCancel} disabled={loading}>
+          Cancelar todas as inscrições
         </button>
       </form>
 

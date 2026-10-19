@@ -16,7 +16,7 @@ from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 
 DB_NAME = "main"
@@ -68,12 +68,14 @@ async def post_promotion_sign(request: Request):
 @app.delete("/v1/promotion/sign")
 async def delete_promotion_sign(request: Request):
     body = await request.json()
+    email = body.get("email")
 
-    if not body.get("email") or not body.get("category"):
-        return {"status": "DADOS_INVALIDOS"}
+    if not isinstance(email, str) or not email.strip():
+        raise HTTPException(400, "E-mail obrigatório")
 
-    publish("interesse.cancelado", body)
-
+    publish("interesse.cancelado", {
+        "email": email.strip()
+    })
     return {"status": "PROCESSANDO"}
 
 @app.on_event("startup")
