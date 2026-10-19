@@ -47,6 +47,8 @@ function App() {
 
   const [createdOrder, setCreatedOrder] = useState<CreatedOrder | null>(null);
 
+  const [orderHistory, setOrderHistory] = useState<CreatedOrder[]>([]);
+
   async function finishOrder() {
     const items = Object.entries(cart)
       .filter(([, quantity]) => quantity > 0)
@@ -167,6 +169,10 @@ function App() {
   }
 
   function startNewOrder() {
+    if (createdOrder) {
+      setOrderHistory((current) => [...current, createdOrder]);
+    }
+
     sseRef.current?.close();
     sseRef.current = null;
 
@@ -202,13 +208,19 @@ function App() {
         onFinish={finishOrder}
       />
 
-      {createdOrder && (
-        <>
-          <OrderTracking order={createdOrder} />
+      <section>
+        <h2>Meus pedidos</h2>
 
-          {!submitting && <button onClick={startNewOrder}>Novo pedido</button>}
-        </>
-      )}
+        {orderHistory.map((order) => (
+          <OrderTracking key={order.id} order={order} />
+        ))}
+
+        {createdOrder && <OrderTracking order={createdOrder} />}
+
+        {createdOrder && !submitting && (
+          <button onClick={startNewOrder}>Novo pedido</button>
+        )}
+      </section>
 
       <PromotionsForm />
     </main>
