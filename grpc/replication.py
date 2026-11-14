@@ -89,6 +89,7 @@ class Replication:
                                for peer in NODE_ADDRESSES if peer != status.node_id], reverse=True)
             candidate = confirmed[QUORUM - 1]
             if (candidate > status.commit_index
+                    and not (self.node.faults is not None and self.node.faults.commit_paused)
                     and log[candidate - 1].term == status.current_term):
                 self.node.storage.commit_and_apply(candidate)
                 self.node._commit_changed.notify_all()

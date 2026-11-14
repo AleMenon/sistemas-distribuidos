@@ -1,0 +1,19 @@
+syntax = "proto3";
+package cluster.demo;
+
+// Serviço registrado SOMENTE quando node.py recebe --demo.
+service DemoControl {
+  rpc Configure(ControlRequest) returns (ControlResponse);
+}
+enum Action {
+  STATUS = 0;
+  ARM_CRASH = 1;
+  PAUSE_COMMIT = 2;
+  RESUME_COMMIT = 3;
+  RESET = 4;
+}
+message ControlRequest { Action action = 1; }
+message ControlResponse {
+  bool crash_armed = 1;
+  bool commit_paused = 2;
+}

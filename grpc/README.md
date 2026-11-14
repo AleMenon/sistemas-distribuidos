@@ -10,7 +10,8 @@ uv run --no-sync python scripts/generate_proto.py
 ```
 
 Arquivos gerados: `cluster_protocol/cluster_pb2.py` e
-`cluster_protocol/cluster_pb2_grpc.py`. Não edite esses arquivos manualmente.
+`cluster_protocol/cluster_pb2_grpc.py`, além de `demo_pb2.py` e
+`demo_pb2_grpc.py` no mesmo pacote. Não edite esses arquivos manualmente.
 O script chama `grpc_tools.protoc` e pode ser executado de qualquer diretório.
 
 Executar os testes (incluem geração em diretório temporário):
@@ -245,4 +246,102 @@ Ctrl+C ou fim da entrada encerra o cliente sem traceback.
 ```bash
 uv run --no-sync python client.py
 uv run --no-sync python client.py --status
+```
+
+## Demonstração controlada de falhas
+
+Por padrão não existe injeção ativa e o serviço auxiliar `DemoControl` não é
+registrado: suas RPCs retornam `UNIMPLEMENTED`. Para habilitá-lo, inicie cada
+nó com `--demo`. Use um diretório separado para os dados da apresentação;
+nenhum banco é apagado automaticamente. Em quatro terminais, execute:
+
+```bash
+uv run --no-sync python node.py --id 1 --demo --data-dir data/demo
+uv run --no-sync python node.py --id 2 --demo --data-dir data/demo
+uv run --no-sync python node.py --id 3 --demo --data-dir data/demo
+uv run --no-sync python node.py --id 4 --demo --data-dir data/demo
+```
+
+Abra `client.py` em outro terminal. Consulte o status e identifique o líder
+antes de cada cenário. Os comandos abaixo usam ID 1 como exemplo de líder:
+**substitua pelo ID efetivamente eleito**. Os controles usam apenas gRPC,
+na mesma porta do nó, e são voláteis: reiniciar ou mudar de mandato os limpa.
+`arm-crash` e `pause-commit` são recusados se o alvo não for líder.
+
+### Cenário A — seguidor desatualizado
+
+1. Identifique um seguidor e encerre-o com Ctrl+C em seu terminal.
+2. No cliente, grave várias chaves com sucesso usando os três nós restantes.
+3. Reinicie o seguidor com exatamente o mesmo ID e `--data-dir data/demo`.
+4. Consulte seu status até `last_log_index` e `commit_index` acompanharem o
+   líder; leia as chaves diretamente nesse seguidor.
+
+Esse cenário também funciona no modo normal, sem controles auxiliares.
+
+### Cenário B — crash após persistência e antes de replicação
+
+```bash
+uv run --no-sync python demo.py --id 1 arm-crash
+```
+
+1. Pelo cliente, envie ao líder uma escrita, por exemplo `orfao=antigo`.
+2. O processo do líder termina abruptamente com código **86**, sem executar
+   encerramento organizado. A entrada já está persistida no SQLite, mas o
+   lock compartilhado com Fetch impede sua replicação antes do crash.
+3. O cliente informa erro de conexão/resultado incerto; não reenvie essa
+   operação. Aguarde a eleição entre os três sobreviventes.
+4. Grave outra chave, por exemplo `substituta=novo`, e aguarde sucesso.
+5. Reinicie o líder antigo com o mesmo ID e diretório de dados. Ele retorna
+   como FOLLOWER, trunca a entrada conflitante e busca a entrada correta.
+6. Consulte esse nó: `orfao` deve estar ausente, `substituta` deve existir, e
+   seus índices devem acompanhar os do líder atual.
+
+O crash é disparado somente pela próxima escrita aceita e persistida. Uma
+escrita rejeitada por falta de quórum não dispara o crash. Para desarmá-lo
+antes de uma escrita, use `reset`.
+
+### Cenário C — entrada replicada, mas não comitada
+
+```bash
+uv run --no-sync python demo.py --id 1 pause-commit
+```
+
+1. Grave uma chave nova no cliente. O Write termina com `NOT_COMMITTED`, pois
+   a pausa impede o avanço do commit mesmo com confirmações suficientes.
+2. Consulte os status: o último índice avança nos seguidores, enquanto o
+   commit_index permanece anterior à nova entrada.
+3. Leia a chave em um seguidor: ela continua inexistente. Heartbeats e Fetch
+   permanecem ativos durante toda a pausa; não é necessário acertar uma janela
+   curta de tempo para realizar a leitura.
+4. Retome o commit:
+
+```bash
+uv run --no-sync python demo.py --id 1 resume-commit
+```
+
+Os próximos FetchRequests permitem calcular o quórum normalmente, e as
+respostas propagam o commit. Aguarde o avanço do commit_index no seguidor e
+repita a leitura: agora o valor deve existir. Não é necessário reenviar Write.
+
+### Inspecionar e restaurar execução normal
+
+```bash
+uv run --no-sync python demo.py --id 1 status
+uv run --no-sync python demo.py --id 1 reset
+```
+
+`reset` remove a pausa e desarma o crash naquele nó, sem alterar seus dados.
+Repita para outros nós controlados. Para remover completamente o acesso às
+RPCs auxiliares, encerre os processos e reinicie **sem `--demo`**, mantendo o
+mesmo ID e diretório se quiser preservar os dados. A execução normal original
+usa `node.py --id N` e os bancos em `data/`.
+
+`tests/test_faults.py` automatiza A, B e C com quatro subprocessos e bancos
+temporários, verifica a persistência após o crash, a ausência de replicação da
+entrada órfã, a recuperação e a retomada após `reset`. A suíte normal verifica
+também que os controles são inacessíveis sem `--demo`. Para executar somente
+os cenários, pare os nós manuais e rode:
+
+```bash
+uv run --no-sync python -m unittest discover -s tests -p test_faults.py -v
 ```

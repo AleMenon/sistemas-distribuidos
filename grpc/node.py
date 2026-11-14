@@ -27,11 +27,12 @@ def log_status(node: Node, message: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Nó do cluster gRPC")
     parser.add_argument("--id", type=int, choices=NODE_ADDRESSES, required=True)
+    parser.add_argument("--demo", action="store_true", help="Habilita RPCs de injeção de falhas")
     parser.add_argument("--data-dir", type=Path, default=DATA_DIR,
                         help="Diretório dos bancos SQLite (padrão: data/ do projeto)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    node = Node(args.id, args.data_dir)
+    node = Node(args.id, args.data_dir, demo=args.demo)
     stop = Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stop.set())
@@ -40,6 +41,10 @@ def main() -> int:
         # Impede que dois processos aceitem conexões na mesma porta.
         server = grpc.server(executor, options=(("grpc.so_reuseport", 0),))
         rpc.add_ClusterServiceServicer_to_server(ClusterService(node), server)
+        if args.demo:
+            from cluster_protocol import demo_pb2_grpc
+            from fault_injection import DemoControl
+            demo_pb2_grpc.add_DemoControlServicer_to_server(DemoControl(node), server)
         try:
             address = NODE_ADDRESSES[args.id]
             if server.add_insecure_port(address) == 0:

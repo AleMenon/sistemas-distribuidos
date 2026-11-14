@@ -16,6 +16,7 @@ def generate(output: Path = ROOT) -> int:
         f"--python_out={output}",
         f"--grpc_python_out={output}",
         "cluster_protocol/cluster.proto",
+        "cluster_protocol/demo.proto",
     ])
 
 

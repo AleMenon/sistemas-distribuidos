@@ -14,6 +14,7 @@ from cluster_protocol import cluster_pb2_grpc as rpc
 from config import NODE_ADDRESSES
 from node_state import Node
 from client_api import ClusterClient
+from cluster_protocol import demo_pb2, demo_pb2_grpc
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +99,11 @@ class ClusterTests(unittest.TestCase):
         self.assertIsNotNone(elected, "Nenhum líder eleito em 10 segundos")
         self.assertGreaterEqual(elected.term, 1)
         self.assertEqual(elected.leader_id, elected.node_id)
+        # No modo normal o serviço auxiliar nem sequer é registrado.
+        with self.assertRaises(grpc.RpcError) as disabled:
+            demo_pb2_grpc.DemoControlStub(channels[int(elected.node_id)]).Configure(
+                demo_pb2.ControlRequest(action=demo_pb2.ARM_CRASH), timeout=2)
+        self.assertEqual(disabled.exception.code(), grpc.StatusCode.UNIMPLEMENTED)
 
         # Vários timeouts de eleição decorrem sem troca de líder graças ao Fetch.
         stable_until = time.monotonic() + 4.5

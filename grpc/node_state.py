@@ -34,12 +34,16 @@ class WriteResult:
 
 
 class Node:
-    def __init__(self, node_id: int, data_dir=DATA_DIR):
+    def __init__(self, node_id: int, data_dir=DATA_DIR, demo: bool = False):
         if node_id not in NODE_ADDRESSES:
             raise ValueError("ID do nó deve estar entre 1 e 4")
         self._lock = RLock()
         self._commit_changed = Condition(self._lock)
         self._closing = False
+        self.faults = None
+        if demo:
+            from fault_injection import FaultInjection
+            self.faults = FaultInjection()
         self._node_id = node_id
         self._role = Role.FOLLOWER
         self.storage = Storage(node_id, data_dir)
@@ -77,6 +81,9 @@ class Node:
     def leadership_changed(self):
         """Chamado sob o lock do nó a cada mudança de papel/termo."""
         self.replication.reset_tracking()
+        if self.faults is not None:
+            self.faults.crash_armed = False
+            self.faults.commit_paused = False
         self._commit_changed.notify_all()
 
     def write(self, key: str, value: str, timeout: float = WRITE_TIMEOUT) -> WriteResult:
@@ -90,6 +97,8 @@ class Node:
             metadata, (last_index, _) = self.storage.snapshot()
             index = last_index + 1
             self.storage.append_entries([LogEntry(index, metadata.current_term, key, value)])
+            if self.faults is not None:
+                self.faults.after_persist()
             deadline = time.monotonic() + timeout
             while True:
                 current = self.storage.load_metadata()
