@@ -1,4 +1,4 @@
-# Cluster gRPC — protocolo
+# Cluster gRPC — infraestrutura inicial
 
 O ambiente `uv` e as dependências `grpcio` e `grpcio-tools` estão no
 projeto do diretório pai. Execute os comandos abaixo neste diretório (`grpc`).
@@ -32,5 +32,42 @@ dados comitados e negociar prefixos anteriores se houver divergência.
 As regras de consenso e a validação de índices são responsabilidades dos
 handlers futuros; protobuf define apenas os formatos das mensagens.
 
-Esta etapa não implementa servidores, handlers, eleição ou replicação.
-As classes de serviço geradas automaticamente são apenas scaffolding do gRPC.
+## Executar os nós e consultar status
+
+Em quatro terminais, execute um comando por terminal, no diretório `grpc/`:
+
+```bash
+uv run --no-sync python node.py --id 1
+uv run --no-sync python node.py --id 2
+uv run --no-sync python node.py --id 3
+uv run --no-sync python node.py --id 4
+```
+
+`config.py` define os endereços: IDs 1, 2, 3 e 4 usam respectivamente
+`127.0.0.1:50051`, `127.0.0.1:50052`, `127.0.0.1:50053` e `127.0.0.1:50054`.
+Não é permitido compartilhar a mesma porta entre servidores.
+
+Em outro terminal, consulte todos os nós:
+
+```bash
+uv run --no-sync python client.py
+```
+
+Cada nó começa como `FOLLOWER`, com termo, índice de commit e último índice
+do log em 0 e líder desconhecido. O cliente continua consultando os demais
+caso algum nó esteja indisponível e retorna código 1 se houver falhas.
+Use Ctrl+C no terminal de um nó para encerrá-lo, aguardando até 2 segundos
+pelas RPCs em andamento e finalizando o pool de threads. Os demais continuam.
+Os logs de ciclo de vida contêm timestamp, ID, papel, termo e commit_index.
+
+`node_state.py` concentra o estado em `Node`, protegido por um lock por instância,
+e fornece snapshots imutáveis. `service.py` adapta esse estado para gRPC;
+`node.py` configura o servidor e o encerramento. Apenas `GetStatus` está
+implementado; as outras RPCs retornam `UNIMPLEMENTED`. Não há persistência,
+votação, eleição ou replicação; reiniciar um nó restaura o estado inicial.
+
+O comando de testes acima também inicia quatro subprocessos nas portas
+configuradas, consulta todos via gRPC e encerra um deles com SIGINT, verificando
+que os outros continuam disponíveis. **Pare os nós manuais antes dos testes**
+para deixar as quatro portas livres. Os subprocessos de teste são encerrados
+automaticamente, inclusive em caso de falha.
