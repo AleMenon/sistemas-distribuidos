@@ -94,13 +94,19 @@ class Replication:
                 self.node._commit_changed.notify_all()
                 self.node.election._log("Commit confirmado por quórum")
                 status = self.node.get_status()
-            # Em divergência, enviar o log completo permite validar o prefixo
-            # comitado e substituir somente o sufixo conflitante na réplica.
-            prev = index if matches else 0
+            if not matches:
+                # Não conhecemos ainda o prefixo comum. Remover o último índice
+                # conflitante (ou o sufixo além do líder) e pedir novamente.
+                # Prefixo 0 e entries vazio não autorizam aplicar novos commits.
+                restart = max(0, min(index - 1, len(log)))
+                return FetchResponse(
+                    status.current_term, str(status.node_id), True, status.commit_index,
+                    truncate_after_index=restart,
+                )
+            prev = index
             return FetchResponse(
                 status.current_term, str(status.node_id), True, status.commit_index,
                 log[prev:], prev, log[prev - 1].term if prev else 0,
-                len(log) if index > len(log) else None,
             )
 
     def accept(self, peer_id, response):

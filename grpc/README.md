@@ -152,9 +152,20 @@ Atividade não é confirmação de commit e não faz o índice de commit avança
 
 `Storage.apply_fetch` valida o prefixo, persiste as entradas e aplica apenas até
 o commit informado e o prefixo sincronizado, em uma única transação. Se o último
-termo/índice do seguidor divergir, a resposta inclui o log completo para validar
-o prefixo e substituir o sufixo não comitado; conflitos com entradas comitadas
-são rejeitados. Dados recebidos mas não comitados continuam invisíveis em `read`.
+termo/índice do seguidor divergir, a resposta contém `truncate_after_index` e
+nenhuma entrada: o seguidor remove apenas o sufixo não comitado e faz novo Fetch.
+Se o índice exceder o log do líder, volta ao último índice do líder; caso contrário,
+recua um índice por tentativa até encontrar um prefixo comum. Nesse ponto recebe
+as entradas faltantes e pode aplicar o commit informado. Respostas de truncamento
+não avançam o commit, pois ainda não validaram um prefixo comum.
+Conflitos com entradas comitadas são rejeitados. Dados recebidos mas não
+comitados continuam invisíveis em `read`.
+
+O progresso da recuperação está no próprio log SQLite: reiniciar entre truncar
+e buscar entradas retoma a sincronização a partir da última posição persistida.
+Cada resposta é aplicada em uma transação; falhas durante a aplicação desfazem
+as alterações daquela resposta. O commit local é limitado às entradas existentes
+e ao prefixo validado. Não há alteração no protocolo nem na lógica de eleição.
 
 O líder calcula commit a partir das confirmações validadas nos FetchRequests.
 Os testes também verificam Fetch periódico,

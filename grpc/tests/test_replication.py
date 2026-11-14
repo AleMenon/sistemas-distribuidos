@@ -95,6 +95,8 @@ class ReplicationTests(unittest.TestCase):
         self.follower.storage.append_entries([LogEntry(1, 0, "a", "wrong"),
                                               LogEntry(2, 0, "b", "extra")])
         self.fetch_once()
+        self.fetch_once()
+        self.fetch_once()
         self.assertEqual(self.follower.storage.get_entries(), self.leader.storage.get_entries())
         self.follower.storage.commit_and_apply(1)
         response = FetchResponse(1, "1", True, entries=[LogEntry(1, 1, "a", "bad")])
