@@ -91,7 +91,7 @@ diretórios temporários, sem alterar bancos de execução manual.
   rejeitando índices comitados e o índice 0.
 - `commit_and_apply(index)`: aplica as operações em ordem ao estado final e
   atualiza `commit_index` e `last_applied` em uma única transação. Rejeita
-  retrocesso e índices além do log. A validação futura de quórum cabe ao nó.
+  retrocesso e índices além do log. A validação de quórum cabe à replicação do nó.
 - `read(key)`: consulta exclusivamente o estado comitado; retorna `None` para
   ausência e preserva string vazia como valor válido.
 - `snapshot` e `close`: leitura consistente de metadados/posição e fechamento.
@@ -155,23 +155,52 @@ termo/índice do seguidor divergir, a resposta inclui o log completo para valida
 o prefixo e substituir o sufixo não comitado; conflitos com entradas comitadas
 são rejeitados. Dados recebidos mas não comitados continuam invisíveis em `read`.
 
-Não há cálculo de commit por quórum nesta etapa. Os testes simulam um commit
-já decidido para verificar sua propagação. Eles também verificam Fetch periódico,
+O líder calcula commit a partir das confirmações validadas nos FetchRequests.
+Os testes também verificam Fetch periódico,
 expiração de atividade, respostas obsoletas, falhas de comunicação, proteção de
 dados comitados e encerramento do loop antes do fechamento do SQLite.
 
-## Recepção de escritas (sem commit por quórum)
+## Escritas e confirmação por quórum
 
 `Write(key, value)` aceita entradas somente no líder. Seguidores e candidatos
 retornam `success=false`, `error="NOT_LEADER"`, índice 0 e o ID do líder
-conhecido (ou string vazia). O líder persiste a entrada com índice sequencial
-e termo atual, retornando `success=false`, `error="NOT_COMMITTED"`, seu ID e
-o índice atribuído. Esse retorno não confirma sucesso nem significa que a
-entrada será necessariamente comitada no futuro.
+conhecido (ou string vazia). O líder verifica se há pelo menos dois seguidores
+ativos, além de si mesmo; caso contrário retorna `NO_QUORUM`, índice 0, sem
+inserir a operação. Um líder recém-eleito aguarda os primeiros Fetches para
+conhecer a atividade das réplicas.
 
 `Node.write` protege a verificação do papel, atribuição de índice/termo e
-persistência com o mesmo lock usado pelas eleições. As entradas ficam
-disponíveis para Fetch, sem envio Push e sem alteração do banco final.
-Mesmo que todos os seguidores recebam a entrada, o commit permanece inalterado.
-Não há espera por quórum nesta etapa; também não há deduplicação de novas
-chamadas Write, portanto repetir a chamada cria outra operação.
+persistência com o mesmo lock usado pelas eleições. Depois de persistir a
+entrada com índice sequencial e termo atual, aguarda usando `threading.Condition`,
+que libera o lock durante a espera para permitir Fetches e eleições.
+
+O líder mantém `match_index` por seguidor. Somente um FetchRequest cujo último
+índice e termo correspondam ao log do líder confirma armazenamento; enviar
+entradas em uma resposta não conta como confirmação. A própria cópia do líder
+participa do quórum fixo de 3. O maior índice confirmado por três nós só avança
+o commit diretamente se sua entrada pertencer ao termo atual; isso também
+comita seu prefixo de termos anteriores. Mudanças de mandato descartam as
+confirmações em memória, exigindo novos Fetches.
+
+O avanço usa a transação SQLite de `commit_and_apply` e notifica as escritas
+aguardando. O índice atualizado segue nas respostas de Fetch: uma réplica que
+apenas recebeu entradas continua sem aplicá-las até receber a atualização.
+
+Respostas de Write:
+
+- `success=true`, erro vazio: operação comitada e mandato ainda válido.
+- `NOT_COMMITTED`: expirou `WRITE_TIMEOUT` (1,5 segundo), sem confirmação.
+- `NOT_LEADER`: não era líder ou perdeu o mandato durante a espera.
+- `NO_QUORUM`: menos de 3 nós conhecidos como ativos; nada foi inserido.
+- `BUSY`: limite de escritas simultâneas no serviço atingido; nada foi inserido.
+
+O serviço limita escritas em espera a `MAX_WORKERS - 1`, deixando capacidade
+para Fetch e votação. Também limita a espera ao prazo da RPC, quando presente.
+O índice retornado é 0 quando não houve inserção; caso contrário identifica a
+entrada persistida. Timeout não desfaz essa entrada: ela pode ser comitada
+depois. Não há deduplicação, portanto repetir Write cria outra operação.
+
+Os testes verificam confirmação com três cópias, timeout com somente duas,
+rejeição sem quórum ativo, propagação posterior, proteção contra confirmações
+divergentes e segurança ao mudar de mandato. O teste com quatro processos
+verifica sucesso de Write e avanço do commit em todos os nós via gRPC.

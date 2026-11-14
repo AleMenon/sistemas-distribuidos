@@ -21,10 +21,12 @@ class WriteTests(unittest.TestCase):
         for peer in (2, 3):
             self.leader.election.receive_vote(peer, request.term, VoteResponse(request.term, True))
         self.term = request.term
+        for peer in (2, 3):
+            self.leader.replication.fetch(FetchRequest(self.term, str(peer), 0, 0))
 
     def test_persisted_sequential_entries_without_commit(self):
         for index, value in enumerate(("first", "second"), 1):
-            result = self.leader.write("key", value)
+            result = self.leader.write("key", value, timeout=0)
             self.assertFalse(result.success)
             self.assertEqual((result.error, result.index, result.leader_id),
                              ("NOT_COMMITTED", index, "1"))
@@ -53,7 +55,7 @@ class WriteTests(unittest.TestCase):
         self.assertEqual(node.storage.get_entries(), [])
 
     def test_pull_to_all_followers_keeps_data_invisible(self):
-        self.leader.write("key", "value")
+        self.leader.write("key", "value", timeout=0)
         for node in self.nodes[1:]:
             node.election.observe_term(self.term)
             response = self.leader.replication.fetch(FetchRequest(self.term, str(node._node_id), 0, 0))
@@ -65,7 +67,7 @@ class WriteTests(unittest.TestCase):
 
     def test_concurrent_writes_preserve_unique_sequence(self):
         with ThreadPoolExecutor(max_workers=8) as pool:
-            results = list(pool.map(lambda i: self.leader.write("key", str(i)), range(32)))
+            results = list(pool.map(lambda i: self.leader.write("key", str(i), timeout=0), range(32)))
         self.assertEqual(sorted(r.index for r in results), list(range(1, 33)))
         entries = self.leader.storage.get_entries()
         self.assertEqual([e.index for e in entries], list(range(1, 33)))
@@ -77,7 +79,7 @@ class WriteTests(unittest.TestCase):
         barrier = Barrier(2)
         def write():
             barrier.wait()
-            return self.leader.write("key", "value")
+            return self.leader.write("key", "value", timeout=0)
         def step_down():
             barrier.wait()
             self.leader.election.observe_term(self.term + 1)
@@ -93,6 +95,6 @@ class WriteTests(unittest.TestCase):
             self.assertEqual(entries[0].term, self.term)
         else:
             self.assertEqual(result.error, "NOT_LEADER")
-            self.assertEqual(entries, [])
+            self.assertEqual(len(entries), result.index)
         self.assertEqual(self.leader.write("later", "value").error, "NOT_LEADER")
         self.assertIsNone(self.leader.storage.read("key"))

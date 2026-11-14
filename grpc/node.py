@@ -54,6 +54,7 @@ def main() -> int:
             return 1
         finally:
             log_status(node, "Encerrando servidor")
+            node.begin_shutdown()
             node.election.stop()
             node.replication.stop()
             server.stop(SHUTDOWN_GRACE).wait()

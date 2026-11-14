@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from threading import Event, Thread
 import time
 
-from config import FETCH_INTERVAL, HEARTBEAT_TIMEOUT, NODE_ADDRESSES
+from config import FETCH_INTERVAL, HEARTBEAT_TIMEOUT, NODE_ADDRESSES, QUORUM
 from node_state import Role
 from storage import LogEntry
 
@@ -36,15 +36,23 @@ class Replication:
         self.interval = interval
         self.last_fetch_time = {}
         self.active_followers = {}
+        self.match_index = {}
         self._heartbeat_term = None
         self._stop = Event()
         self._thread = None
+
+    def reset_tracking(self):
+        self.last_fetch_time.clear()
+        self.active_followers.clear()
+        self.match_index.clear()
+        self._heartbeat_term = None
 
     def _refresh_activity(self):
         status = self.node.get_status()
         if status.role != Role.LEADER or self._heartbeat_term != status.current_term:
             self.last_fetch_time.clear()
             self.active_followers.clear()
+            self.match_index.clear()
             self._heartbeat_term = status.current_term if status.role == Role.LEADER else None
         if status.role == Role.LEADER:
             for peer in NODE_ADDRESSES:
@@ -75,6 +83,17 @@ class Replication:
             index = request.last_log_index
             matches = ((index == 0 and request.last_log_term == 0) or
                        (0 < index <= len(log) and log[index - 1].term == request.last_log_term))
+            # Se o prefixo divergir, nenhuma confirmação desta réplica é reutilizada.
+            self.match_index[request.follower_id] = index if matches else 0
+            confirmed = sorted([len(log)] + [self.match_index.get(str(peer), 0)
+                               for peer in NODE_ADDRESSES if peer != status.node_id], reverse=True)
+            candidate = confirmed[QUORUM - 1]
+            if (candidate > status.commit_index
+                    and log[candidate - 1].term == status.current_term):
+                self.node.storage.commit_and_apply(candidate)
+                self.node._commit_changed.notify_all()
+                self.node.election._log("Commit confirmado por quórum")
+                status = self.node.get_status()
             # Em divergência, enviar o log completo permite validar o prefixo
             # comitado e substituir somente o sufixo conflitante na réplica.
             prev = index if matches else 0

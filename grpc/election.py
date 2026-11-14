@@ -53,6 +53,7 @@ class Election:
                 self.node._leader_id = ""
                 self._votes.clear()
                 self._reset_timeout()
+                self.node.leadership_changed()
                 self._log("Termo superior recebido")
 
     def observe_leader(self, term, leader_id):
@@ -69,6 +70,7 @@ class Election:
             self._votes.clear()
             self._reset_timeout()
             if changed:
+                self.node.leadership_changed()
                 self._log("Líder reconhecido")
             return True
 
@@ -100,6 +102,7 @@ class Election:
             self.node._leader_id = ""
             self._votes = {own_id}
             self._reset_timeout()
+            self.node.leadership_changed()
             self._log("Eleição iniciada")
             return VoteRequest(term, own_id, index, log_term)
 
@@ -116,6 +119,7 @@ class Election:
             if len(self._votes) >= QUORUM:
                 self.node._role = Role.LEADER
                 self.node._leader_id = str(self.node._node_id)
+                self.node.leadership_changed()
                 self._log("Líder eleito com quórum")
 
     def start_if_due(self):

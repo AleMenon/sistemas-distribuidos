@@ -111,9 +111,9 @@ class ClusterTests(unittest.TestCase):
         leader_stub = rpc.ClusterServiceStub(channels[int(elected.node_id)])
         for index, value in enumerate(("first", "second"), 1):
             result = leader_stub.Write(pb.WriteRequest(key="key", value=value), timeout=2)
-            self.assertFalse(result.success)
+            self.assertTrue(result.success)
             self.assertEqual((result.error, result.index, result.leader_id),
-                             ("NOT_COMMITTED", index, elected.node_id))
+                             ("", index, elected.node_id))
         follower_id = next(i for i in NODE_ADDRESSES if str(i) != elected.node_id)
         result = rpc.ClusterServiceStub(channels[follower_id]).Write(
             pb.WriteRequest(key="rejected", value="value"), timeout=2)
@@ -123,11 +123,11 @@ class ClusterTests(unittest.TestCase):
         while True:
             statuses = [rpc.ClusterServiceStub(channel).GetStatus(pb.GetStatusRequest(), timeout=2)
                         for channel in channels.values()]
-            if all(status.last_log_index == 2 for status in statuses):
+            if all(status.last_log_index == 2 and status.commit_index == 2 for status in statuses):
                 break
             self.assertLess(time.monotonic(), deadline, "Fetch não replicou as escritas")
             time.sleep(0.05)
-        self.assertTrue(all(status.commit_index == 0 for status in statuses))
+        self.assertTrue(all(status.commit_index == 2 for status in statuses))
 
         # Read continua explicitamente não implementada.
         with self.assertRaises(grpc.RpcError) as error:

@@ -5,11 +5,15 @@ from cluster_protocol import cluster_pb2_grpc as rpc
 from node_state import Node
 from election import VoteRequest
 from replication import FetchRequest
+from threading import BoundedSemaphore
+from config import MAX_WORKERS, WRITE_TIMEOUT
 
 
 class ClusterService(rpc.ClusterServiceServicer):
     def __init__(self, node: Node):
         self.node = node
+        # Reserva capacidade no pool gRPC para Fetch/eleição durante esperas de Write.
+        self._write_slots = BoundedSemaphore(max(1, MAX_WORKERS - 1))
 
     def GetStatus(self, request, context):
         status = self.node.get_status()
@@ -26,7 +30,15 @@ class ClusterService(rpc.ClusterServiceServicer):
         return pb.RequestVoteResponse(term=response.term, vote_granted=response.vote_granted)
 
     def Write(self, request, context):
-        result = self.node.write(request.key, request.value)
+        if not self._write_slots.acquire(blocking=False):
+            return pb.WriteResponse(success=False, error="BUSY",
+                                    leader_id=self.node.get_status().leader_id)
+        try:
+            remaining = context.time_remaining()
+            timeout = WRITE_TIMEOUT if remaining is None else min(WRITE_TIMEOUT, remaining)
+            result = self.node.write(request.key, request.value, timeout=max(0, timeout))
+        finally:
+            self._write_slots.release()
         return pb.WriteResponse(success=result.success, error=result.error,
                                 leader_id=result.leader_id, index=result.index)
 
