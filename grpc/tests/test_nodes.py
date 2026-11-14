@@ -108,10 +108,31 @@ class ClusterTests(unittest.TestCase):
                     self.assertEqual(status.node_id, elected.node_id)
             time.sleep(0.1)
 
-        # As outras RPCs continuam explicitamente não implementadas.
+        leader_stub = rpc.ClusterServiceStub(channels[int(elected.node_id)])
+        for index, value in enumerate(("first", "second"), 1):
+            result = leader_stub.Write(pb.WriteRequest(key="key", value=value), timeout=2)
+            self.assertFalse(result.success)
+            self.assertEqual((result.error, result.index, result.leader_id),
+                             ("NOT_COMMITTED", index, elected.node_id))
+        follower_id = next(i for i in NODE_ADDRESSES if str(i) != elected.node_id)
+        result = rpc.ClusterServiceStub(channels[follower_id]).Write(
+            pb.WriteRequest(key="rejected", value="value"), timeout=2)
+        self.assertEqual((result.error, result.index, result.leader_id),
+                         ("NOT_LEADER", 0, elected.node_id))
+        deadline = time.monotonic() + 5
+        while True:
+            statuses = [rpc.ClusterServiceStub(channel).GetStatus(pb.GetStatusRequest(), timeout=2)
+                        for channel in channels.values()]
+            if all(status.last_log_index == 2 for status in statuses):
+                break
+            self.assertLess(time.monotonic(), deadline, "Fetch não replicou as escritas")
+            time.sleep(0.05)
+        self.assertTrue(all(status.commit_index == 0 for status in statuses))
+
+        # Read continua explicitamente não implementada.
         with self.assertRaises(grpc.RpcError) as error:
-            rpc.ClusterServiceStub(channels[1]).Write(
-                pb.WriteRequest(), timeout=2,
+            rpc.ClusterServiceStub(channels[1]).Read(
+                pb.ReadRequest(), timeout=2,
             )
         self.assertEqual(error.exception.code(), grpc.StatusCode.UNIMPLEMENTED)
 

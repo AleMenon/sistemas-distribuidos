@@ -25,6 +25,11 @@ class ClusterService(rpc.ClusterServiceServicer):
         ))
         return pb.RequestVoteResponse(term=response.term, vote_granted=response.vote_granted)
 
+    def Write(self, request, context):
+        result = self.node.write(request.key, request.value)
+        return pb.WriteResponse(success=result.success, error=result.error,
+                                leader_id=result.leader_id, index=result.index)
+
     def Fetch(self, request, context):
         response = self.node.replication.fetch(FetchRequest(
             request.term, request.follower_id, request.last_log_index, request.last_log_term))

@@ -5,7 +5,7 @@ from enum import Enum
 from threading import RLock
 
 from config import NODE_ADDRESSES
-from storage import DATA_DIR, Storage
+from storage import DATA_DIR, LogEntry, Storage
 
 
 class Role(Enum):
@@ -22,6 +22,14 @@ class NodeStatus:
     commit_index: int
     last_log_index: int
     leader_id: str
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    success: bool
+    error: str
+    leader_id: str
+    index: int
 
 
 class Node:
@@ -52,3 +60,14 @@ class Node:
         self.election.stop()
         with self._lock:
             self.storage.close()
+
+    def write(self, key: str, value: str) -> WriteResult:
+        # O mesmo lock serializa escritas, Fetch e transições de liderança.
+        with self._lock:
+            if self._role != Role.LEADER:
+                return WriteResult(False, "NOT_LEADER", self._leader_id, 0)
+            metadata, (last_index, _) = self.storage.snapshot()
+            index = last_index + 1
+            self.storage.append_entries([LogEntry(index, metadata.current_term, key, value)])
+            # Persistido não significa comitado. Nenhum dado é aplicado aqui.
+            return WriteResult(False, "NOT_COMMITTED", str(self._node_id), index)

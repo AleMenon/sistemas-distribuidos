@@ -64,7 +64,7 @@ Os logs de ciclo de vida contêm timestamp, ID, papel, termo e commit_index.
 `node_state.py` concentra o estado em `Node`, protegido por um lock por instância,
 e fornece snapshots imutáveis. `service.py` adapta esse estado para gRPC;
 `node.py` configura o servidor e o encerramento. Apenas `GetStatus` está
-implementado junto com `RequestVote` e `Fetch`; `Write` e `Read` ainda retornam
+implementado junto com `RequestVote`, `Fetch` e `Write`; `Read` ainda retorna
 `UNIMPLEMENTED`. Leituras do estado comitado nesta etapa usam a API de storage.
 
 O comando de testes acima também inicia quatro subprocessos nas portas
@@ -159,3 +159,19 @@ Não há cálculo de commit por quórum nesta etapa. Os testes simulam um commit
 já decidido para verificar sua propagação. Eles também verificam Fetch periódico,
 expiração de atividade, respostas obsoletas, falhas de comunicação, proteção de
 dados comitados e encerramento do loop antes do fechamento do SQLite.
+
+## Recepção de escritas (sem commit por quórum)
+
+`Write(key, value)` aceita entradas somente no líder. Seguidores e candidatos
+retornam `success=false`, `error="NOT_LEADER"`, índice 0 e o ID do líder
+conhecido (ou string vazia). O líder persiste a entrada com índice sequencial
+e termo atual, retornando `success=false`, `error="NOT_COMMITTED"`, seu ID e
+o índice atribuído. Esse retorno não confirma sucesso nem significa que a
+entrada será necessariamente comitada no futuro.
+
+`Node.write` protege a verificação do papel, atribuição de índice/termo e
+persistência com o mesmo lock usado pelas eleições. As entradas ficam
+disponíveis para Fetch, sem envio Push e sem alteração do banco final.
+Mesmo que todos os seguidores recebam a entrada, o commit permanece inalterado.
+Não há espera por quórum nesta etapa; também não há deduplicação de novas
+chamadas Write, portanto repetir a chamada cria outra operação.
