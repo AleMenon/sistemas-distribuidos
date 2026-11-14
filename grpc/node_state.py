@@ -1,10 +1,11 @@
-"""Estado em memória, independente do transporte gRPC."""
+"""Estado do nó, independente do transporte gRPC, com metadados persistidos."""
 
 from dataclasses import dataclass
 from enum import Enum
 from threading import RLock
 
 from config import NODE_ADDRESSES
+from storage import DATA_DIR, Storage
 
 
 class Role(Enum):
@@ -24,21 +25,24 @@ class NodeStatus:
 
 
 class Node:
-    def __init__(self, node_id: int):
+    def __init__(self, node_id: int, data_dir=DATA_DIR):
         if node_id not in NODE_ADDRESSES:
             raise ValueError("ID do nó deve estar entre 1 e 4")
         self._lock = RLock()
         self._node_id = node_id
         self._role = Role.FOLLOWER
-        self._current_term = 0
-        self._commit_index = 0
-        self._last_log_index = 0
+        self.storage = Storage(node_id, data_dir)
         self._leader_id = ""
 
     def get_status(self) -> NodeStatus:
         """Retorna uma cópia imutável e consistente do estado compartilhado."""
         with self._lock:
+            metadata, (last_index, _) = self.storage.snapshot()
             return NodeStatus(
-                self._node_id, self._role, self._current_term,
-                self._commit_index, self._last_log_index, self._leader_id,
+                self._node_id, self._role, metadata.current_term,
+                metadata.commit_index, last_index, self._leader_id,
             )
+
+    def close(self) -> None:
+        with self._lock:
+            self.storage.close()

@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import logging
+from pathlib import Path
 import signal
 from threading import Event
 
@@ -12,6 +13,7 @@ from cluster_protocol import cluster_pb2_grpc as rpc
 from config import MAX_WORKERS, NODE_ADDRESSES, SHUTDOWN_GRACE
 from node_state import Node
 from service import ClusterService
+from storage import DATA_DIR
 
 
 def log_status(node: Node, message: str) -> None:
@@ -24,9 +26,11 @@ def log_status(node: Node, message: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Nó do cluster gRPC")
     parser.add_argument("--id", type=int, choices=NODE_ADDRESSES, required=True)
+    parser.add_argument("--data-dir", type=Path, default=DATA_DIR,
+                        help="Diretório dos bancos SQLite (padrão: data/ do projeto)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    node = Node(args.id)
+    node = Node(args.id, args.data_dir)
     stop = Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: stop.set())
@@ -48,7 +52,9 @@ def main() -> int:
         finally:
             log_status(node, "Encerrando servidor")
             server.stop(SHUTDOWN_GRACE).wait()
+            executor.shutdown(wait=True)
             log_status(node, "Servidor encerrado")
+            node.close()
     return 0
 
 

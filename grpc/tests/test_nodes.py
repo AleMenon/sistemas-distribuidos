@@ -19,11 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class StateTests(unittest.TestCase):
     def test_instances_have_independent_state(self):
-        first, second = Node(1), Node(2)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        first, second = Node(1, temp.name), Node(2, temp.name)
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
         self.assertIsNot(first._lock, second._lock)
-        # Simula mudança interna sem introduzir uma API de eleição nesta etapa.
-        with first._lock:
-            first._current_term = 7
+        first.storage.save_metadata(7, None)
         self.assertEqual(first.get_status().current_term, 7)
         self.assertEqual(second.get_status().current_term, 0)
         snapshot = second.get_status()
@@ -38,6 +40,8 @@ class StateTests(unittest.TestCase):
 
 class ClusterTests(unittest.TestCase):
     def test_four_processes_and_independent_shutdown(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
         processes, channels, logs = {}, {}, {}
 
         def cleanup():
@@ -58,7 +62,8 @@ class ClusterTests(unittest.TestCase):
         for node_id in NODE_ADDRESSES:
             logs[node_id] = tempfile.TemporaryFile(mode="w+")
             processes[node_id] = subprocess.Popen(
-                [sys.executable, "node.py", "--id", str(node_id)], cwd=ROOT,
+                [sys.executable, "node.py", "--id", str(node_id),
+                 "--data-dir", temp.name], cwd=ROOT,
                 stdout=logs[node_id], stderr=subprocess.STDOUT,
             )
         for node_id, address in NODE_ADDRESSES.items():

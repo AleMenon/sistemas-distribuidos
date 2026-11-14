@@ -53,8 +53,9 @@ Em outro terminal, consulte todos os nós:
 uv run --no-sync python client.py
 ```
 
-Cada nó começa como `FOLLOWER`, com termo, índice de commit e último índice
-do log em 0 e líder desconhecido. O cliente continua consultando os demais
+Um banco novo começa com termo, índice de commit e último índice do log em 0.
+Ao reiniciar, o nó recupera esses valores do SQLite, mas sempre assume o papel
+`FOLLOWER` e líder desconhecido. O cliente continua consultando os demais
 caso algum nó esteja indisponível e retorna código 1 se houver falhas.
 Use Ctrl+C no terminal de um nó para encerrá-lo, aguardando até 2 segundos
 pelas RPCs em andamento e finalizando o pool de threads. Os demais continuam.
@@ -63,11 +64,44 @@ Os logs de ciclo de vida contêm timestamp, ID, papel, termo e commit_index.
 `node_state.py` concentra o estado em `Node`, protegido por um lock por instância,
 e fornece snapshots imutáveis. `service.py` adapta esse estado para gRPC;
 `node.py` configura o servidor e o encerramento. Apenas `GetStatus` está
-implementado; as outras RPCs retornam `UNIMPLEMENTED`. Não há persistência,
-votação, eleição ou replicação; reiniciar um nó restaura o estado inicial.
+implementado; as outras RPCs retornam `UNIMPLEMENTED`. Não há votação,
+eleição ou replicação.
 
 O comando de testes acima também inicia quatro subprocessos nas portas
 configuradas, consulta todos via gRPC e encerra um deles com SIGINT, verificando
 que os outros continuam disponíveis. **Pare os nós manuais antes dos testes**
 para deixar as quatro portas livres. Os subprocessos de teste são encerrados
 automaticamente, inclusive em caso de falha.
+
+## Persistência SQLite
+
+Cada nó mantém seu banco em `data/node_<id>.db`, relativo à pasta deste projeto,
+independentemente do diretório de execução. Os arquivos são ignorados pelo Git
+e nunca são apagados na inicialização ou no encerramento. A opção
+`--data-dir /caminho` permite selecionar outro diretório; os testes usam
+diretórios temporários, sem alterar bancos de execução manual.
+
+`storage.py` fornece:
+
+- `initialize`, `load_metadata` e `save_metadata`: inicialização idempotente e
+  persistência conjunta de termo e voto (`None` significa voto não concedido).
+- `append_entries`, `get_entries` e `last_log_position`: log contíguo a partir
+  de 1, com posição `(0, 0)` quando vazio. Inserções em lote são atômicas.
+- `truncate_from(index)`: remove o sufixo incluindo o índice informado,
+  rejeitando índices comitados e o índice 0.
+- `commit_and_apply(index)`: aplica as operações em ordem ao estado final e
+  atualiza `commit_index` e `last_applied` em uma única transação. Rejeita
+  retrocesso e índices além do log. A validação futura de quórum cabe ao nó.
+- `read(key)`: consulta exclusivamente o estado comitado; retorna `None` para
+  ausência e preserva string vazia como valor válido.
+- `snapshot` e `close`: leitura consistente de metadados/posição e fechamento.
+
+Um lock por instância protege a conexão SQLite compartilhada entre threads.
+As mutações usam transações `BEGIN IMMEDIATE`, com rollback em caso de falha;
+nenhuma API permite modificar os índices de commit sem aplicar os dados.
+`Node` consulta o estado persistido para evitar cópias de metadados desatualizadas.
+O servidor termina suas requisições antes de fechar a conexão SQLite.
+
+Os testes incluem reabertura dos bancos, visibilidade de dados, truncamento,
+isolamento dos quatro nós, concorrência e rollback após falha durante aplicação.
+Execute toda a suíte com o comando `unittest` documentado acima.
