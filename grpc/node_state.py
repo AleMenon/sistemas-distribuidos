@@ -33,6 +33,8 @@ class Node:
         self._role = Role.FOLLOWER
         self.storage = Storage(node_id, data_dir)
         self._leader_id = ""
+        from election import Election
+        self.election = Election(self)
 
     def get_status(self) -> NodeStatus:
         """Retorna uma cópia imutável e consistente do estado compartilhado."""
@@ -44,5 +46,6 @@ class Node:
             )
 
     def close(self) -> None:
+        self.election.stop()
         with self._lock:
             self.storage.close()

@@ -64,8 +64,8 @@ Os logs de ciclo de vida contêm timestamp, ID, papel, termo e commit_index.
 `node_state.py` concentra o estado em `Node`, protegido por um lock por instância,
 e fornece snapshots imutáveis. `service.py` adapta esse estado para gRPC;
 `node.py` configura o servidor e o encerramento. Apenas `GetStatus` está
-implementado; as outras RPCs retornam `UNIMPLEMENTED`. Não há votação,
-eleição ou replicação.
+implementado junto com `RequestVote`; as outras RPCs retornam `UNIMPLEMENTED`.
+Não há replicação.
 
 O comando de testes acima também inicia quatro subprocessos nas portas
 configuradas, consulta todos via gRPC e encerra um deles com SIGINT, verificando
@@ -105,3 +105,26 @@ O servidor termina suas requisições antes de fechar a conexão SQLite.
 Os testes incluem reabertura dos bancos, visibilidade de dados, truncamento,
 isolamento dos quatro nós, concorrência e rollback após falha durante aplicação.
 Execute toda a suíte com o comando `unittest` documentado acima.
+
+## Eleição de líder
+
+Os mesmos comandos de execução ativam automaticamente a eleição.
+`config.py` define timeout aleatório entre 1 e 2 segundos, prazo de 0,5 segundo
+por RPC de voto e quórum fixo de 3 nós. Cada nova tentativa sorteia outro timeout.
+
+`election.py` implementa candidatura, voto persistido, comparação do log por
+`(last_log_term, last_log_index)`, contagem de votos distintos e transição para
+seguidor ao observar termo superior. Usa o mesmo lock do estado do nó; chamadas
+de rede acontecem fora desse lock. `transport.py` envia votos em gRPC com prazo
+limitado; `service.py` adapta a RPC `RequestVote` para as regras de eleição.
+Termo e voto são gravados antes de enviar solicitações ou conceder votos.
+
+Ainda não há heartbeat: seguidores podem iniciar novas eleições mesmo com
+um líder ativo. Esta etapa verifica a eleição inicial, sem prometer liderança
+estável. `observe_leader` permite interromper a candidatura ao reconhecer um
+líder válido de termo igual ou superior; será integrado ao Fetch na próxima
+etapa. Nenhum anúncio de liderança ou heartbeat adicional foi introduzido.
+
+Os testes verificam quórum, votos repetidos/concorrentes, comparação de logs,
+termos superiores, respostas atrasadas, recuperação do voto e timeout com nova
+tentativa. O teste dos quatro processos aguarda a primeira eleição via gRPC.

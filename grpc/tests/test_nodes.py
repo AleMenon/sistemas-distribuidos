@@ -4,6 +4,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 import grpc
@@ -74,10 +75,8 @@ class ClusterTests(unittest.TestCase):
             )
             self.assertIsNone(processes[node_id].poll())
             self.assertEqual(status.node_id, str(node_id))
-            self.assertEqual(status.role, pb.FOLLOWER)
-            self.assertEqual((status.term, status.commit_index, status.last_log_index),
-                             (0, 0, 0))
-            self.assertEqual(status.leader_id, "")
+            self.assertIn(status.role, (pb.FOLLOWER, pb.CANDIDATE, pb.LEADER))
+            self.assertEqual((status.commit_index, status.last_log_index), (0, 0))
 
         client = subprocess.run([sys.executable, "client.py"], cwd=ROOT,
                                 capture_output=True, text=True, timeout=15)
@@ -85,10 +84,24 @@ class ClusterTests(unittest.TestCase):
         for node_id, address in NODE_ADDRESSES.items():
             self.assertIn(f"{address} node_id={node_id}", client.stdout)
 
+        deadline = time.monotonic() + 10
+        elected = None
+        while time.monotonic() < deadline and elected is None:
+            for channel in channels.values():
+                status = rpc.ClusterServiceStub(channel).GetStatus(pb.GetStatusRequest(), timeout=2)
+                if status.role == pb.LEADER:
+                    elected = status
+                    break
+            if elected is None:
+                time.sleep(0.02)
+        self.assertIsNotNone(elected, "Nenhum líder eleito em 10 segundos")
+        self.assertGreaterEqual(elected.term, 1)
+        self.assertEqual(elected.leader_id, elected.node_id)
+
         # As outras RPCs continuam explicitamente não implementadas.
         with self.assertRaises(grpc.RpcError) as error:
-            rpc.ClusterServiceStub(channels[1]).RequestVote(
-                pb.RequestVoteRequest(), timeout=2,
+            rpc.ClusterServiceStub(channels[1]).Fetch(
+                pb.FetchRequest(), timeout=2,
             )
         self.assertEqual(error.exception.code(), grpc.StatusCode.UNIMPLEMENTED)
 
@@ -109,7 +122,7 @@ class ClusterTests(unittest.TestCase):
                 pb.GetStatusRequest(), timeout=2,
             )
             self.assertEqual(status.node_id, str(node_id))
-            self.assertEqual(status.term, 0)
+            self.assertGreaterEqual(status.term, 0)
 
 
 if __name__ == "__main__":
