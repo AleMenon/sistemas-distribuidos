@@ -47,7 +47,7 @@ uv run --no-sync python node.py --id 4
 `127.0.0.1:50051`, `127.0.0.1:50052`, `127.0.0.1:50053` e `127.0.0.1:50054`.
 Não é permitido compartilhar a mesma porta entre servidores.
 
-Em outro terminal, consulte todos os nós:
+Em outro terminal, abra o menu do cliente:
 
 ```bash
 uv run --no-sync python client.py
@@ -56,16 +56,17 @@ uv run --no-sync python client.py
 Um banco novo começa com termo, índice de commit e último índice do log em 0.
 Ao reiniciar, o nó recupera esses valores do SQLite, mas sempre assume o papel
 `FOLLOWER` e líder desconhecido. O cliente continua consultando os demais
-caso algum nó esteja indisponível e retorna código 1 se houver falhas.
+caso algum nó esteja indisponível. A opção `--status` consulta os quatro nós
+sem abrir o menu e retorna código 1 se houver falhas.
 Use Ctrl+C no terminal de um nó para encerrá-lo, aguardando até 2 segundos
 pelas RPCs em andamento e finalizando o pool de threads. Os demais continuam.
 Os logs de ciclo de vida contêm timestamp, ID, papel, termo e commit_index.
 
 `node_state.py` concentra o estado em `Node`, protegido por um lock por instância,
 e fornece snapshots imutáveis. `service.py` adapta esse estado para gRPC;
-`node.py` configura o servidor e o encerramento. Apenas `GetStatus` está
-implementado junto com `RequestVote`, `Fetch` e `Write`; `Read` ainda retorna
-`UNIMPLEMENTED`. Leituras do estado comitado nesta etapa usam a API de storage.
+`node.py` configura o servidor e o encerramento. `GetStatus`, `RequestVote`,
+`Fetch`, `Write` e `Read` estão implementados. `Read` consulta exclusivamente
+o banco final e retorna seu commit_index em uma leitura protegida pelo lock.
 
 O comando de testes acima também inicia quatro subprocessos nas portas
 configuradas, consulta todos via gRPC e encerra um deles com SIGINT, verificando
@@ -204,3 +205,33 @@ Os testes verificam confirmação com três cópias, timeout com somente duas,
 rejeição sem quórum ativo, propagação posterior, proteção contra confirmações
 divergentes e segurança ao mudar de mandato. O teste com quatro processos
 verifica sucesso de Write e avanço do commit em todos os nós via gRPC.
+
+## Cliente de terminal
+
+`client.py` contém apenas o menu e a apresentação; `client_api.py` concentra
+chamadas gRPC, descoberta e redirecionamento, sem acessar bancos ou objetos Node.
+
+O menu oferece status dos nós, gravação, leitura em um nó escolhido, leitura
+em todos os nós e saída. Na gravação, escolha qualquer nó inicial: o cliente
+envia Write a ele e segue `NOT_LEADER` quando nenhuma entrada foi inserida.
+Se o líder for desconhecido ou o destino estiver indisponível antes do envio,
+consulta GetStatus dos nós disponíveis para descobrir o líder de maior termo.
+Cada nó recebe no máximo uma tentativa de Write por operação, com prazo de
+2 segundos por RPC; ciclos de redirecionamento são interrompidos.
+
+Erros de conexão, ausência de líder, falta de quórum, timeout de commit e
+servidor ocupado têm mensagens distintas. Somente `success=true` é apresentado
+como escrita confirmada. Falha de comunicação após enviar Write, timeout de
+commit ou perda de mandato após inserção são resultados incertos: o cliente
+não reenvia automaticamente, pois não existe deduplicação de operações.
+
+Leituras consultam diretamente o nó escolhido, sem redirecionamento, e mostram
+ID e commit_index local. Uma chave inexistente é distinta de um valor vazio.
+Leituras podem estar atrasadas até o próximo Fetch, mas nunca expõem operações
+não comitadas. Consultas a todos os nós continuam mesmo com algum indisponível.
+Ctrl+C ou fim da entrada encerra o cliente sem traceback.
+
+```bash
+uv run --no-sync python client.py
+uv run --no-sync python client.py --status
+```

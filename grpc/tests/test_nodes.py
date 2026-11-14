@@ -13,6 +13,7 @@ from cluster_protocol import cluster_pb2 as pb
 from cluster_protocol import cluster_pb2_grpc as rpc
 from config import NODE_ADDRESSES
 from node_state import Node
+from client_api import ClusterClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +79,7 @@ class ClusterTests(unittest.TestCase):
             self.assertIn(status.role, (pb.FOLLOWER, pb.CANDIDATE, pb.LEADER))
             self.assertEqual((status.commit_index, status.last_log_index), (0, 0))
 
-        client = subprocess.run([sys.executable, "client.py"], cwd=ROOT,
+        client = subprocess.run([sys.executable, "client.py", "--status"], cwd=ROOT,
                                 capture_output=True, text=True, timeout=15)
         self.assertEqual(client.returncode, 0, client.stderr)
         for node_id, address in NODE_ADDRESSES.items():
@@ -108,12 +109,13 @@ class ClusterTests(unittest.TestCase):
                     self.assertEqual(status.node_id, elected.node_id)
             time.sleep(0.1)
 
-        leader_stub = rpc.ClusterServiceStub(channels[int(elected.node_id)])
+        api = ClusterClient()
+        follower_id = next(i for i in NODE_ADDRESSES if str(i) != elected.node_id)
         for index, value in enumerate(("first", "second"), 1):
-            result = leader_stub.Write(pb.WriteRequest(key="key", value=value), timeout=2)
+            result = api.write(follower_id, "key", value)
             self.assertTrue(result.success)
-            self.assertEqual((result.error, result.index, result.leader_id),
-                             ("", index, elected.node_id))
+            self.assertEqual((result.code, result.index, result.node_id),
+                             ("", index, int(elected.node_id)))
         follower_id = next(i for i in NODE_ADDRESSES if str(i) != elected.node_id)
         result = rpc.ClusterServiceStub(channels[follower_id]).Write(
             pb.WriteRequest(key="rejected", value="value"), timeout=2)
@@ -129,12 +131,12 @@ class ClusterTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertTrue(all(status.commit_index == 2 for status in statuses))
 
-        # Read continua explicitamente não implementada.
-        with self.assertRaises(grpc.RpcError) as error:
-            rpc.ClusterServiceStub(channels[1]).Read(
-                pb.ReadRequest(), timeout=2,
-            )
-        self.assertEqual(error.exception.code(), grpc.StatusCode.UNIMPLEMENTED)
+        for channel in channels.values():
+            stub = rpc.ClusterServiceStub(channel)
+            found = stub.Read(pb.ReadRequest(key="key"), timeout=2)
+            self.assertTrue(found.exists)
+            self.assertEqual((found.value, found.commit_index), ("second", 2))
+            self.assertFalse(stub.Read(pb.ReadRequest(key="missing"), timeout=2).exists)
 
         victim = int(elected.node_id)
         processes[victim].send_signal(signal.SIGINT)
@@ -161,6 +163,12 @@ class ClusterTests(unittest.TestCase):
             if replacement is None:
                 time.sleep(0.05)
         self.assertIsNotNone(replacement, "Nenhum novo líder após perda do líder")
+        readings = api.read_all("key")
+        self.assertEqual(sum(bool(result.error) for result in readings), 1)
+        for result in readings:
+            if result.node_id != victim:
+                self.assertTrue(result.response.exists)
+                self.assertEqual(result.response.value, "second")
         for node_id in survivors:
             self.assertIsNone(processes[node_id].poll())
             status = rpc.ClusterServiceStub(channels[node_id]).GetStatus(

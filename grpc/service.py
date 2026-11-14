@@ -29,6 +29,11 @@ class ClusterService(rpc.ClusterServiceServicer):
         ))
         return pb.RequestVoteResponse(term=response.term, vote_granted=response.vote_granted)
 
+    def Read(self, request, context):
+        value, commit_index = self.node.read(request.key)
+        return pb.ReadResponse(value=value if value is not None else "",
+                               exists=value is not None, commit_index=commit_index)
+
     def Write(self, request, context):
         if not self._write_slots.acquire(blocking=False):
             return pb.WriteResponse(success=False, error="BUSY",

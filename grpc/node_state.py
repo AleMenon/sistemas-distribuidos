@@ -70,6 +70,10 @@ class Node:
             self._closing = True
             self._commit_changed.notify_all()
 
+    def read(self, key: str) -> tuple[str | None, int]:
+        with self._lock:
+            return self.storage.read(key), self.storage.load_metadata().commit_index
+
     def leadership_changed(self):
         """Chamado sob o lock do nó a cada mudança de papel/termo."""
         self.replication.reset_tracking()
