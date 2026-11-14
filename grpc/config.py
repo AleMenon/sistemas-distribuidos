@@ -1,6 +1,16 @@
-"""Endereços locais fixos dos quatro processos do cluster."""
+"""Configuração compartilhada; CLUSTER_PORTS permite isolar execuções locais."""
 
-NODE_ADDRESSES = {node_id: f"127.0.0.1:{50050 + node_id}" for node_id in range(1, 5)}
+import os
+
+
+def load_addresses():
+    ports = [int(value) for value in os.environ.get("CLUSTER_PORTS", "50051,50052,50053,50054").split(",")]
+    if len(ports) != 4 or len(set(ports)) != 4 or any(not 1 <= port <= 65535 for port in ports):
+        raise ValueError("CLUSTER_PORTS deve conter quatro portas distintas entre 1 e 65535")
+    return {node_id: f"127.0.0.1:{port}" for node_id, port in enumerate(ports, 1)}
+
+
+NODE_ADDRESSES = load_addresses()
 RPC_TIMEOUT = 2.0
 SHUTDOWN_GRACE = 2.0
 MAX_WORKERS = 4

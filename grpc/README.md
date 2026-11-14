@@ -14,10 +14,10 @@ Arquivos gerados: `cluster_protocol/cluster_pb2.py` e
 `demo_pb2_grpc.py` no mesmo pacote. Não edite esses arquivos manualmente.
 O script chama `grpc_tools.protoc` e pode ser executado de qualquer diretório.
 
-Executar os testes (incluem geração em diretório temporário):
+Executar a suíte completa, incluindo testes end-to-end e geração em diretório temporário:
 
 ```bash
-uv run --no-sync python -m unittest discover -s tests -v
+uv run --no-sync python -m pytest -q
 ```
 
 O contrato está em `proto/cluster.proto`. Índice 0 significa log vazio;
@@ -46,7 +46,15 @@ uv run --no-sync python node.py --id 4
 
 `config.py` define os endereços: IDs 1, 2, 3 e 4 usam respectivamente
 `127.0.0.1:50051`, `127.0.0.1:50052`, `127.0.0.1:50053` e `127.0.0.1:50054`.
-Não é permitido compartilhar a mesma porta entre servidores.
+Não é permitido compartilhar a mesma porta entre servidores. Para executar
+outro cluster local, defina `CLUSTER_PORTS` com quatro portas distintas, na ordem
+dos IDs. Todos os nós e clientes desse cluster devem receber o mesmo valor:
+
+```bash
+export CLUSTER_PORTS=51051,51052,51053,51054
+```
+
+Sem essa variável, as portas padrão continuam sendo 50051 a 50054.
 
 Em outro terminal, abra o menu do cliente:
 
@@ -71,9 +79,11 @@ o banco final e retorna seu commit_index em uma leitura protegida pelo lock.
 
 O comando de testes acima também inicia quatro subprocessos nas portas
 configuradas, consulta todos via gRPC e encerra um deles com SIGINT, verificando
-que os outros continuam disponíveis. **Pare os nós manuais antes dos testes**
-para deixar as quatro portas livres. Os subprocessos de teste são encerrados
-automaticamente, inclusive em caso de falha.
+que os outros continuam disponíveis. Com pytest, os testes de processos usam
+portas livres próprias e bancos temporários. Os subprocessos são encerrados
+automaticamente, inclusive em caso de falha. A execução legada por `unittest`
+continua disponível, mas não executa os novos testes pytest e usa as portas
+configuradas para os testes antigos; nesse caso, pare antes os nós manuais.
 
 ## Persistência SQLite
 
@@ -106,7 +116,7 @@ O servidor termina suas requisições antes de fechar a conexão SQLite.
 
 Os testes incluem reabertura dos bancos, visibilidade de dados, truncamento,
 isolamento dos quatro nós, concorrência e rollback após falha durante aplicação.
-Execute toda a suíte com o comando `unittest` documentado acima.
+Execute toda a suíte com o comando `pytest` documentado acima.
 
 ## Eleição de líder
 
@@ -345,3 +355,35 @@ os cenários, pare os nós manuais e rode:
 ```bash
 uv run --no-sync python -m unittest discover -s tests -p test_faults.py -v
 ```
+
+## Testes end-to-end com pytest
+
+`pytest` está registrado no grupo `dev` do projeto uv no diretório pai.
+Para preparar um ambiente novo, execute `uv sync --group dev` nesse diretório.
+Em `grpc/`, use:
+
+```bash
+# Suíte completa: testes anteriores + end-to-end
+uv run --no-sync python -m pytest -q
+
+# Somente os cenários obrigatórios end-to-end
+uv run --no-sync python -m pytest -v -m e2e
+```
+
+`tests/test_e2e.py` contém seis testes cobrindo os cinco cenários obrigatórios:
+escrita/leitura distribuída, eleição após queda do líder, perda/restauração de
+quórum, recuperação de seguidor atrasado, recuperação de líder com entrada
+conflitante e isolamento de dados não comitados.
+
+Cada teste inicia quatro processos reais de `node.py`, com bancos em `tmp_path`
+e quatro portas livres definidas por `CLUSTER_PORTS`. Não depende de um ID
+específico vencer a eleição. Os controles `--demo` tornam crash e pausa de
+commit reproduzíveis. A sincronização consulta estados e dados via gRPC com
+polling e deadlines, em vez de presumir prontidão após uma espera fixa.
+A inspeção SQLite em modo somente leitura comprova a persistência e o
+truncamento; não altera nem controla os nós.
+
+A fixture encerra os processos em `finally`, tenta encerramento organizado e
+usa kill apenas se o processo exceder o prazo. Em falhas de convergência, o teste
+inclui os últimos logs dos nós no diagnóstico. Os testes anteriores de processos
+também recebem portas isoladas quando executados pelo pytest.
