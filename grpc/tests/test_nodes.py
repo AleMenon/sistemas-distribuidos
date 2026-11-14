@@ -98,25 +98,49 @@ class ClusterTests(unittest.TestCase):
         self.assertGreaterEqual(elected.term, 1)
         self.assertEqual(elected.leader_id, elected.node_id)
 
+        # Vários timeouts de eleição decorrem sem troca de líder graças ao Fetch.
+        stable_until = time.monotonic() + 4.5
+        while time.monotonic() < stable_until:
+            for channel in channels.values():
+                status = rpc.ClusterServiceStub(channel).GetStatus(pb.GetStatusRequest(), timeout=2)
+                self.assertEqual(status.term, elected.term)
+                if status.role == pb.LEADER:
+                    self.assertEqual(status.node_id, elected.node_id)
+            time.sleep(0.1)
+
         # As outras RPCs continuam explicitamente não implementadas.
         with self.assertRaises(grpc.RpcError) as error:
-            rpc.ClusterServiceStub(channels[1]).Fetch(
-                pb.FetchRequest(), timeout=2,
+            rpc.ClusterServiceStub(channels[1]).Write(
+                pb.WriteRequest(), timeout=2,
             )
         self.assertEqual(error.exception.code(), grpc.StatusCode.UNIMPLEMENTED)
 
-        processes[1].send_signal(signal.SIGINT)
-        self.assertEqual(processes[1].wait(timeout=8), 0)
-        logs[1].seek(0)
-        output = logs[1].read()
-        self.assertIn("node_id=1 role=FOLLOWER term=0 commit_index=0", output)
+        victim = int(elected.node_id)
+        processes[victim].send_signal(signal.SIGINT)
+        self.assertEqual(processes[victim].wait(timeout=8), 0)
+        logs[victim].seek(0)
+        output = logs[victim].read()
+        self.assertIn(f"node_id={victim} role=FOLLOWER term=0 commit_index=0", output)
         self.assertIn("Servidor encerrado", output)
         # A RPC não implementada acima gera um traceback pelo próprio gRPC;
         # o encerramento, por sua vez, deve ser limpo.
         self.assertNotIn("Traceback", output.split("Encerrando servidor", 1)[1])
         with self.assertRaises(grpc.RpcError):
-            rpc.ClusterServiceStub(channels[1]).GetStatus(pb.GetStatusRequest(), timeout=2)
-        for node_id in (2, 3, 4):
+            rpc.ClusterServiceStub(channels[victim]).GetStatus(pb.GetStatusRequest(), timeout=2)
+        survivors = [node_id for node_id in NODE_ADDRESSES if node_id != victim]
+        deadline = time.monotonic() + 10
+        replacement = None
+        while time.monotonic() < deadline and replacement is None:
+            for node_id in survivors:
+                status = rpc.ClusterServiceStub(channels[node_id]).GetStatus(
+                    pb.GetStatusRequest(), timeout=2)
+                if status.role == pb.LEADER and status.term > elected.term:
+                    replacement = status
+                    break
+            if replacement is None:
+                time.sleep(0.05)
+        self.assertIsNotNone(replacement, "Nenhum novo líder após perda do líder")
+        for node_id in survivors:
             self.assertIsNone(processes[node_id].poll())
             status = rpc.ClusterServiceStub(channels[node_id]).GetStatus(
                 pb.GetStatusRequest(), timeout=2,

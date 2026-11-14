@@ -64,8 +64,8 @@ Os logs de ciclo de vida contêm timestamp, ID, papel, termo e commit_index.
 `node_state.py` concentra o estado em `Node`, protegido por um lock por instância,
 e fornece snapshots imutáveis. `service.py` adapta esse estado para gRPC;
 `node.py` configura o servidor e o encerramento. Apenas `GetStatus` está
-implementado junto com `RequestVote`; as outras RPCs retornam `UNIMPLEMENTED`.
-Não há replicação.
+implementado junto com `RequestVote` e `Fetch`; `Write` e `Read` ainda retornam
+`UNIMPLEMENTED`. Leituras do estado comitado nesta etapa usam a API de storage.
 
 O comando de testes acima também inicia quatro subprocessos nas portas
 configuradas, consulta todos via gRPC e encerra um deles com SIGINT, verificando
@@ -119,12 +119,43 @@ de rede acontecem fora desse lock. `transport.py` envia votos em gRPC com prazo
 limitado; `service.py` adapta a RPC `RequestVote` para as regras de eleição.
 Termo e voto são gravados antes de enviar solicitações ou conceder votos.
 
-Ainda não há heartbeat: seguidores podem iniciar novas eleições mesmo com
-um líder ativo. Esta etapa verifica a eleição inicial, sem prometer liderança
-estável. `observe_leader` permite interromper a candidatura ao reconhecer um
-líder válido de termo igual ou superior; será integrado ao Fetch na próxima
-etapa. Nenhum anúncio de liderança ou heartbeat adicional foi introduzido.
+O Fetch agora funciona como heartbeat: uma resposta válida do líder renova o
+timeout e interrompe candidaturas de termo igual ou inferior. Falhas de conexão
+não renovam o timeout, permitindo nova eleição quando o líder fica inacessível.
 
 Os testes verificam quórum, votos repetidos/concorrentes, comparação de logs,
 termos superiores, respostas atrasadas, recuperação do voto e timeout com nova
-tentativa. O teste dos quatro processos aguarda a primeira eleição via gRPC.
+tentativa. O teste dos quatro processos aguarda a primeira eleição via gRPC,
+verifica estabilidade durante vários timeouts e encerra o líder para verificar
+uma nova eleição com os três nós restantes.
+
+## Replicação Pull (Fetch)
+
+Os comandos de execução permanecem os mesmos. `replication.py` executa o loop
+em uma thread própria, sem bloquear o servidor. `config.py` configura:
+
+- `FETCH_INTERVAL = 0.1`: espera de 100 ms entre tentativas.
+- `FETCH_RPC_TIMEOUT = 0.2`: prazo de cada consulta de descoberta ou Fetch.
+- `HEARTBEAT_TIMEOUT = 0.5`: inatividade após 500 ms sem Fetch do seguidor.
+
+Quando não conhece o líder, o nó consulta `GetStatus` dos pares por gRPC e
+confirma a liderança pela resposta de `Fetch`. Candidatos também podem fazer
+essa descoberta para abandonar uma candidatura ao encontrar um líder válido.
+O seguidor envia ID, termo atual e última posição persistida do log. O líder
+responde apenas a pedidos; não há envio espontâneo de entradas nem heartbeat Push.
+
+O líder mantém `last_fetch_time` por seguidor usando `time.monotonic()` e
+atualiza `active_followers` periodicamente. `activity()` retorna cópias desses
+mapas sob lock. Os registros são descartados ao mudar de termo ou sair da liderança.
+Atividade não é confirmação de commit e não faz o índice de commit avançar.
+
+`Storage.apply_fetch` valida o prefixo, persiste as entradas e aplica apenas até
+o commit informado e o prefixo sincronizado, em uma única transação. Se o último
+termo/índice do seguidor divergir, a resposta inclui o log completo para validar
+o prefixo e substituir o sufixo não comitado; conflitos com entradas comitadas
+são rejeitados. Dados recebidos mas não comitados continuam invisíveis em `read`.
+
+Não há cálculo de commit por quórum nesta etapa. Os testes simulam um commit
+já decidido para verificar sua propagação. Eles também verificam Fetch periódico,
+expiração de atividade, respostas obsoletas, falhas de comunicação, proteção de
+dados comitados e encerramento do loop antes do fechamento do SQLite.

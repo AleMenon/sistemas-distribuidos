@@ -35,6 +35,8 @@ class Node:
         self._leader_id = ""
         from election import Election
         self.election = Election(self)
+        from replication import Replication
+        self.replication = Replication(self)
 
     def get_status(self) -> NodeStatus:
         """Retorna uma cópia imutável e consistente do estado compartilhado."""
@@ -46,6 +48,7 @@ class Node:
             )
 
     def close(self) -> None:
+        self.replication.stop()
         self.election.stop()
         with self._lock:
             self.storage.close()

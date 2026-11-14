@@ -56,18 +56,20 @@ class Election:
                 self._log("Termo superior recebido")
 
     def observe_leader(self, term, leader_id):
-        """Ponto de integração futuro: chamar apenas para líder validado pelo protocolo."""
+        """Reconhece comunicação bem-sucedida com um líder validado pelo protocolo."""
         with self.node._lock:
             self.observe_term(term)
             if (term < self.node.storage.load_metadata().current_term
                     or leader_id not in {str(i) for i in NODE_ADDRESSES}
                     or leader_id == str(self.node._node_id)):
                 return False
+            changed = self.node._role != Role.FOLLOWER or self.node._leader_id != leader_id
             self.node._role = Role.FOLLOWER
             self.node._leader_id = leader_id
             self._votes.clear()
             self._reset_timeout()
-            self._log("Líder reconhecido")
+            if changed:
+                self._log("Líder reconhecido")
             return True
 
     def request_vote(self, request):

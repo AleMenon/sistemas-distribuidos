@@ -142,6 +142,45 @@ class Storage:
             ).fetchone()
             return row[0] if row else None
 
+    def apply_fetch(self, prev_index, prev_term, entries, commit_index, truncate_after=None):
+        """Valida e sincroniza um Fetch inteiro em uma única transação."""
+        with self._transaction() as db:
+            metadata = self.load_metadata()
+            local = {entry.index: entry for entry in self.get_entries()}
+            if prev_index == 0:
+                if prev_term != 0:
+                    raise ValueError("Prefixo vazio deve ter termo 0")
+            elif prev_index not in local or local[prev_index].term != prev_term:
+                raise ValueError("Prefixo do Fetch não corresponde ao log local")
+            for expected, entry in enumerate(entries, prev_index + 1):
+                if entry.index != expected:
+                    raise ValueError("Entradas de Fetch não contíguas")
+                existing = local.get(entry.index)
+                if existing == entry:
+                    continue
+                if existing is not None:
+                    if entry.index <= metadata.commit_index:
+                        raise ValueError("Fetch conflita com entrada comitada")
+                    db.execute("DELETE FROM operation_log WHERE log_index >= ?", (entry.index,))
+                    local = {i: value for i, value in local.items() if i < entry.index}
+                db.execute("INSERT INTO operation_log VALUES (?, ?, ?, ?)",
+                           (entry.index, entry.term, entry.key, entry.value))
+                local[entry.index] = entry
+            if truncate_after is not None:
+                if truncate_after < metadata.commit_index:
+                    raise ValueError("Fetch removeria entrada comitada")
+                db.execute("DELETE FROM operation_log WHERE log_index > ?", (truncate_after,))
+            matched_index = prev_index + len(entries)
+            target = min(commit_index, matched_index, self.last_log_position()[0])
+            if target > metadata.commit_index:
+                rows = db.execute("SELECT key, value FROM operation_log WHERE log_index > ? "
+                                  "AND log_index <= ? ORDER BY log_index",
+                                  (metadata.last_applied, target)).fetchall()
+                for key, value in rows:
+                    db.execute("INSERT INTO committed_state VALUES (?, ?) "
+                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+                db.execute("UPDATE metadata SET commit_index = ?, last_applied = ?", (target, target))
+
     def close(self) -> None:
         with self._lock:
             self._connection.close()

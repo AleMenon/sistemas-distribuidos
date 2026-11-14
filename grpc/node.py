@@ -14,7 +14,7 @@ from config import MAX_WORKERS, NODE_ADDRESSES, SHUTDOWN_GRACE
 from node_state import Node
 from service import ClusterService
 from storage import DATA_DIR
-from transport import send_vote
+from transport import send_vote, get_status, send_fetch
 
 
 def log_status(node: Node, message: str) -> None:
@@ -47,6 +47,7 @@ def main() -> int:
             server.start()
             log_status(node, f"Servidor iniciado em {address}")
             node.election.start(send_vote)
+            node.replication.start(get_status, send_fetch)
             stop.wait()
         except RuntimeError as exc:
             log_status(node, f"Falha ao iniciar: {exc}")
@@ -54,6 +55,7 @@ def main() -> int:
         finally:
             log_status(node, "Encerrando servidor")
             node.election.stop()
+            node.replication.stop()
             server.stop(SHUTDOWN_GRACE).wait()
             executor.shutdown(wait=True)
             log_status(node, "Servidor encerrado")
