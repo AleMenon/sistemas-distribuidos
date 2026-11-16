@@ -26,7 +26,11 @@ class ProtocolTests(unittest.TestCase):
     def test_generation_and_stub_import(self):
         result = subprocess.run(
             [sys.executable, "-c",
-             "from cluster_protocol.cluster_pb2_grpc import ClusterServiceStub"],
+             "from cluster_protocol.cluster_pb2_grpc import ClusterServiceStub; "
+             "from cluster_protocol.demo_pb2_grpc import DemoControlStub; "
+             "from cluster_protocol.cluster_pb2 import FetchResponse; "
+             "message = FetchResponse(truncate_after_index=0); "
+             "assert FetchResponse.FromString(message.SerializeToString()).HasField('truncate_after_index')"],
             cwd=self.output, capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

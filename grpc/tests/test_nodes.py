@@ -151,8 +151,7 @@ class ClusterTests(unittest.TestCase):
         output = logs[victim].read()
         self.assertIn(f"node_id={victim} role=FOLLOWER term=0 commit_index=0", output)
         self.assertIn("Servidor encerrado", output)
-        # A RPC não implementada acima gera um traceback pelo próprio gRPC;
-        # o encerramento, por sua vez, deve ser limpo.
+        # O encerramento deve ser limpo.
         self.assertNotIn("Traceback", output.split("Encerrando servidor", 1)[1])
         with self.assertRaises(grpc.RpcError):
             rpc.ClusterServiceStub(channels[victim]).GetStatus(pb.GetStatusRequest(), timeout=2)

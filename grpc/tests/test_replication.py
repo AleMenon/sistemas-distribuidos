@@ -34,7 +34,7 @@ class ReplicationTests(unittest.TestCase):
         self.assertEqual(self.follower.storage.get_entries(), [entry])
         self.assertIsNone(self.follower.storage.read("key"))
         self.assertEqual(self.leader.storage.load_metadata().commit_index, 0)
-        # Simula commit já decidido; não há cálculo de quórum nesta etapa.
+        # Isola a propagação de um commit já decidido; quórum tem testes próprios.
         self.leader.storage.commit_and_apply(1)
         self.assertTrue(self.fetch_once())
         self.assertEqual(self.follower.storage.read("key"), "value")

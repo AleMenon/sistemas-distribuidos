@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from threading import Barrier
 
 import grpc
 import pytest
@@ -227,3 +228,34 @@ def test_uncommitted_data_isolation(cluster):
         assert not result.success and result.error == "NOT_COMMITTED"
     cluster.control(leader, demo.RESUME_COMMIT)
     cluster.visible("hidden", "later-visible", result.index)
+
+
+def test_concurrent_grpc_writes_leave_capacity_for_fetch(cluster):
+    leader = int(cluster.leader().node_id)
+    barrier = Barrier(3)
+    def write(index):
+        barrier.wait(timeout=3)
+        return cluster.write(leader, f"concurrent-{index}", str(index))
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(write, range(3)))
+    assert all(result.success for result in results), results
+    assert sorted(result.index for result in results) == [1, 2, 3]
+    for i, result in enumerate(results):
+        cluster.visible(f"concurrent-{i}", str(i), result.index)
+
+
+def test_full_cluster_restart_preserves_committed_data(cluster):
+    before = cluster.leader()
+    result = cluster.write(int(before.node_id), "persistent", "value")
+    assert result.success
+    cluster.visible("persistent", "value", result.index)
+    expected_log = cluster.disk_log(int(before.node_id))
+    for node_id in cluster.channels:
+        cluster.stop(node_id)
+    for node_id in cluster.channels:
+        cluster.start(node_id)
+    after = cluster.leader(after_term=before.term)
+    assert after.term > before.term
+    cluster.visible("persistent", "value", result.index)
+    for node_id in cluster.channels:
+        assert cluster.disk_log(node_id) == expected_log

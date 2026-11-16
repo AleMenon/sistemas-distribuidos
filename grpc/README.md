@@ -1,7 +1,52 @@
-# Cluster gRPC — infraestrutura inicial
+# Replicação Pull com gRPC — Sistemas Distribuídos
 
-O ambiente `uv` e as dependências `grpcio` e `grpcio-tools` estão no
-projeto do diretório pai. Execute os comandos abaixo neste diretório (`grpc`).
+Trabalho acadêmico: quatro nós independentes, um cliente, eleição inspirada
+no Raft e replicação exclusivamente Pull. Cada nó usa o mesmo código, tem um
+banco SQLite próprio e assume FOLLOWER, CANDIDATE ou LEADER dinamicamente.
+O quórum é sempre 3, mesmo se apenas dois nós estiverem disponíveis.
+
+## Instalação no Arch Linux a partir de um clone limpo
+
+Instale Git e uv pelo gerenciador do sistema. `uv` está no repositório oficial
+[Extra do Arch Linux](https://archlinux.org/packages/extra/x86_64/uv/).
+
+```bash
+sudo pacman -Syu --needed git uv
+git clone https://github.com/AleMenon/sistemas-distribuidos.git
+cd sistemas-distribuidos
+uv python install 3.11
+uv sync --locked --group dev
+cd grpc
+uv run --no-sync python scripts/generate_proto.py
+uv run --no-sync python -m pytest -q
+```
+
+O projeto uv fica na raiz do repositório, um nível acima de `grpc/`.
+`.python-version` seleciona Python 3.11 e `uv.lock` fixa as versões resolvidas.
+`uv sync --locked` instala as dependências sem alterar o lockfile; veja a
+[documentação de sincronização do uv](https://docs.astral.sh/uv/concepts/projects/sync/).
+Não é preciso ativar manualmente o ambiente nem usar pip no Python do sistema.
+Depois da instalação, os demais comandos deste README são executados em `grpc/`.
+`--no-sync` pressupõe que a sincronização inicial já foi feita.
+
+### Dependências
+
+| Dependência | Uso |
+| --- | --- |
+| Python >= 3.11 (ambiente fixado em 3.11) | Execução |
+| `grpcio` | Servidor e clientes gRPC |
+| `grpcio-tools` | Compilação dos arquivos `.proto` |
+| `protobuf` (dependência transitiva) | Mensagens e serialização |
+| `pytest` (grupo `dev`) | Suíte completa, incluindo integração |
+| `sqlite3`, `threading`, `concurrent.futures`, `subprocess` | Biblioteca padrão Python |
+
+As versões exatas estão em `../uv.lock`; os requisitos estão em
+`../pyproject.toml`. O manifesto também atende outro trabalho do repositório e
+inclui FastAPI, Pika e outras dependências que **não são usadas por este cluster**.
+Não é necessário iniciar nenhum serviço HTTP, RabbitMQ, banco externo ou Docker.
+Não é necessário instalar `protoc` separado: a geração usa `grpc_tools.protoc`.
+
+## Gerar protobuf e executar testes
 
 Gerar novamente as mensagens e os stubs Python:
 
@@ -28,10 +73,45 @@ por string vazia. Chaves e valores são strings.
 `FetchResponse` informa o prefixo exigido (`prev_log_index`, `prev_log_term`),
 as entradas e, opcionalmente, o último índice a preservar no truncamento.
 A presença de `truncate_after_index` distingue “sem truncamento” de “preservar
-índice 0”. A futura implementação deverá validar o prefixo, nunca truncar
-dados comitados e negociar prefixos anteriores se houver divergência.
+índice 0”. A implementação valida o prefixo, nunca permite truncar
+dados comitados e negocia prefixos anteriores se houver divergência.
 As regras de consenso e a validação de índices são responsabilidades dos
-handlers futuros; protobuf define apenas os formatos das mensagens.
+handlers e das camadas de negócio; protobuf define apenas os formatos.
+
+## Arquitetura e fluxo de uma operação
+
+| Arquivo | Responsabilidade |
+| --- | --- |
+| `node.py`, `config.py` | Processo, endereços, servidor, temporizadores e encerramento |
+| `node_state.py` | Estado do nó, lock, Write/Read e espera de commit |
+| `election.py` | Termos, votação e transições de papéis |
+| `replication.py` | Fetch periódico, heartbeat, match_index, commit e recuperação |
+| `storage.py` | Transações SQLite, metadados, log e estado comitado |
+| `service.py`, `transport.py` | Adaptação e chamadas gRPC |
+| `client.py`, `client_api.py` | Menu, leituras e redirecionamento de escritas |
+| `fault_injection.py`, `demo.py` | Controles opcionais de demonstração |
+
+1. O cliente envia Write a um nó; um não líder indica o líder conhecido.
+2. O líder verifica a atividade do quórum e persiste a nova entrada no log.
+3. Seguidores enviam Fetch a cada 100 ms e persistem as entradas recebidas.
+4. No próximo Fetch, informam o último índice/termo armazenado. O líder valida
+   esse prefixo e atualiza a confirmação de cada seguidor.
+5. Com três cópias confirmadas e uma entrada do termo atual, o líder comita e
+   aplica o prefixo em uma transação, acordando o Write para responder sucesso.
+6. Os seguidores aplicam o novo commit ao recebê-lo em respostas de Fetch.
+   Read consulta só esse estado aplicado; uma réplica pode estar temporariamente
+   atrasada em relação ao líder, mas não mostra dados não comitados.
+
+Não existe envio espontâneo de entradas pelo líder. RequestVote realiza eleição,
+GetStatus auxilia a descoberta e Fetch realiza replicação/heartbeat. Toda
+comunicação entre processos usa gRPC, inclusive os controles de demonstração.
+
+O lock do nó protege transições, escrita e tratamento de Fetch; o lock do SQLite
+é adquirido depois dele. Nenhum caminho normal adquire esses locks na ordem
+inversa. RPCs externas e joins de threads ocorrem fora do lock do nó.
+`Condition.wait` libera o lock durante a espera do Write; o serviço limita as
+escritas em espera para deixar capacidade para Fetch. Estes cuidados são
+verificados por testes de concorrência, mas não constituem prova formal.
 
 ## Executar os nós e consultar status
 
@@ -278,7 +358,36 @@ antes de cada cenário. Os comandos abaixo usam ID 1 como exemplo de líder:
 na mesma porta do nó, e são voláteis: reiniciar ou mudar de mandato os limpa.
 `arm-crash` e `pause-commit` são recusados se o alvo não for líder.
 
-### Cenário A — seguidor desatualizado
+### Cenário 1 — escrita e leitura distribuída
+
+Com os quatro nós ativos, execute `uv run --no-sync python client.py`.
+Escolha **1** para identificar o líder, **2** para gravar `apresentacao=valor`
+(pode escolher inicialmente um seguidor) e **4** para consultar a chave em todos.
+Resultado esperado: escrita confirmada, seguida de visibilidade nos quatro nós,
+com commit_index pelo menos igual ao índice da operação. Se alguma leitura
+ainda estiver atrasada, repita a consulta após o próximo Fetch.
+
+### Cenário 2 — eleição após queda do líder
+
+Use `uv run --no-sync python client.py --status` para registrar líder e termo.
+Encerre esse processo com Ctrl+C no respectivo terminal. Repita o comando de
+status até um dos três sobreviventes aparecer como LEADER com termo maior.
+Resultado esperado: os sobreviventes continuam acessíveis e elegem novo líder.
+Reinicie o nó encerrado com seu comando original e o mesmo diretório de dados.
+
+### Cenário 3 — perda de quórum
+
+Com os quatro nós ativos, encerre dois seguidores por Ctrl+C. No menu do cliente,
+escolha **2** e tente gravar uma chave nova no líder. Resultado esperado:
+nenhum sucesso; após detectar inatividade, `NO_QUORUM` rejeita sem inserir.
+Se a tentativa coincidir com a detecção da falha, pode ocorrer timeout de commit
+ou perda de liderança. Com apenas dois nós, tampouco há votos para novo líder.
+Reinicie os dois processos com os comandos originais, aguarde eleição e
+descoberta via `client.py --status` e faça uma nova escrita: deve confirmar.
+Uma operação que chegou a entrar no log antes da detecção pode comitar depois;
+timeout não significa cancelamento.
+
+### Cenário 4A — seguidor desatualizado
 
 1. Identifique um seguidor e encerre-o com Ctrl+C em seu terminal.
 2. No cliente, grave várias chaves com sucesso usando os três nós restantes.
@@ -288,7 +397,7 @@ na mesma porta do nó, e são voláteis: reiniciar ou mudar de mandato os limpa.
 
 Esse cenário também funciona no modo normal, sem controles auxiliares.
 
-### Cenário B — crash após persistência e antes de replicação
+### Cenário 4B — crash após persistência e antes de replicação
 
 ```bash
 uv run --no-sync python demo.py --id 1 arm-crash
@@ -310,7 +419,7 @@ O crash é disparado somente pela próxima escrita aceita e persistida. Uma
 escrita rejeitada por falta de quórum não dispara o crash. Para desarmá-lo
 antes de uma escrita, use `reset`.
 
-### Cenário C — entrada replicada, mas não comitada
+### Cenário 5 — entrada replicada, mas não comitada
 
 ```bash
 uv run --no-sync python demo.py --id 1 pause-commit
@@ -370,10 +479,12 @@ uv run --no-sync python -m pytest -q
 uv run --no-sync python -m pytest -v -m e2e
 ```
 
-`tests/test_e2e.py` contém seis testes cobrindo os cinco cenários obrigatórios:
+`tests/test_e2e.py` cobre os cinco cenários obrigatórios:
 escrita/leitura distribuída, eleição após queda do líder, perda/restauração de
 quórum, recuperação de seguidor atrasado, recuperação de líder com entrada
 conflitante e isolamento de dados não comitados.
+Também verifica três escritas gRPC simultâneas e reinicialização completa do
+cluster, preservando os dados comitados.
 
 Cada teste inicia quatro processos reais de `node.py`, com bancos em `tmp_path`
 e quatro portas livres definidas por `CLUSTER_PORTS`. Não depende de um ID
@@ -387,3 +498,45 @@ A fixture encerra os processos em `finally`, tenta encerramento organizado e
 usa kill apenas se o processo exceder o prazo. Em falhas de convergência, o teste
 inclui os últimos logs dos nós no diagnóstico. Os testes anteriores de processos
 também recebem portas isoladas quando executados pelo pytest.
+
+## Limites conhecidos e cuidados na apresentação
+
+- Este é um cluster acadêmico fixo de quatro nós locais, não uma implementação
+  completa de Raft para produção. Não há mudança dinâmica de membros,
+  autenticação, TLS ou tolerância a nós maliciosos.
+- Leituras são eventualmente consistentes, não linearizáveis. Timeout de Write
+  pode deixar uma operação pendente que comitará depois. Não há deduplicação.
+- Sem escrita do mandato atual, entradas antigas ainda não comitadas podem
+  continuar pendentes: não há inserção automática de operação vazia na eleição.
+- O log não tem compactação ou snapshots; Fetch envia o sufixo inteiro e usa
+  os limites padrão de mensagem do gRPC. Use dados pequenos na apresentação.
+- Recuperação conflitante recua um índice por Fetch. Discos cheios/corrompidos,
+  corrupção manual de bancos e partições arbitrárias não têm recuperação
+  especializada. Use apenas um processo por ID e diretório de dados.
+- Testes automatizados não substituem a defesa obrigatória com explicação do
+  código. Não foi encontrado `AGENTS.md` na árvore/ancestrais examinados na
+  revisão; o PDF e os requisitos da tarefa são as referências verificadas.
+- Bancos `data/node_<id>.db` nunca são apagados automaticamente. Para uma
+  demonstração sem dados antigos, escolha outro `--data-dir` em todos os nós;
+  para recuperar falhas, preserve exatamente o diretório usado anteriormente.
+
+## Resultado da revisão final — 16/11/2026
+
+Validação executada em Arch Linux, Python 3.11.15, numa cópia limpa dos arquivos
+versionados com as alterações desta revisão, sem ambiente virtual, caches ou
+bancos preexistentes. `uv sync --locked --group dev` criou o ambiente; a geração
+protobuf reproduziu os quatro arquivos versionados; `node.py`, `client.py` e
+`demo.py` responderam a `--help`. A suíte completa terminou com **64 testes e
+18 subtestes aprovados em 41,43 segundos**. O comando pacman e o clone remoto
+estão documentados, mas não foram reexecutados: Git/uv já estavam instalados e
+a revisão utilizou a cópia local para incluir as alterações ainda não publicadas.
+
+Foram conferidos os critérios do PDF: voto/termo persistidos, comparação de
+logs, quórum 3, Pull e heartbeat por Fetch, commit atômico, leitura somente
+comitada, redirecionamento, recuperação, truncamento e reinicialização.
+Não foram identificados deadlocks ou condições de corrida evidentes nos
+caminhos revisados; os testes de concorrência e processos passaram.
+Não foi necessária alteração na lógica de consenso. Foram corrigidos textos
+desatualizados e removido um import não utilizado. Caches locais foram removidos
+e o `.gitignore` passou a cobrir caches pytest, ambientes e arquivos SQLite,
+inclusive journals/WAL. Os bancos persistentes existentes foram preservados.

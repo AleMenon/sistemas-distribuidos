@@ -1,11 +1,10 @@
-"""Transporte gRPC das solicitações de voto."""
+"""Transporte gRPC de votação, descoberta de líder e Fetch."""
 
 import grpc
 
 from cluster_protocol import cluster_pb2 as pb, cluster_pb2_grpc as rpc
-from config import NODE_ADDRESSES, VOTE_RPC_TIMEOUT
+from config import FETCH_RPC_TIMEOUT, NODE_ADDRESSES, VOTE_RPC_TIMEOUT
 from election import VoteResponse
-from config import FETCH_RPC_TIMEOUT
 from node_state import NodeStatus, Role
 from replication import FetchResponse
 from storage import LogEntry

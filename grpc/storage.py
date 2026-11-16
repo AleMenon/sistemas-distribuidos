@@ -117,7 +117,7 @@ class Storage:
     def commit_and_apply(self, commit_index: int) -> None:
         """Aplica em ordem e atualiza os dois índices na mesma transação.
 
-        O chamador futuro será responsável por validar o quórum.
+        O chamador é responsável por validar o quórum.
         """
         with self._transaction() as db:
             metadata = self.load_metadata()

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import grpc
 
 from client import main, show_read, show_write
-from client_api import ClusterClient, QueryResult, WriteResult
+from client_api import ClusterClient, WriteResult
 from cluster_protocol import cluster_pb2 as pb
 
 
